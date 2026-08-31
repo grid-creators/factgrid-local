@@ -1,0 +1,45 @@
+# Qleverfile für den lokalen FactGrid-Spiegel – Nutzung mit dem QLever-CLI (`pipx install qlever`)
+#
+#   make fetch convert     # JSON-Dump holen und nach Turtle konvertieren (scripts/)
+#   qlever index           # Index bauen (Schätzung für ~1,4 Mio. Entitäten / ~200–300 Mio. Tripel:
+#                          #   20–60 min, ~30–60 GB auf der Platte; bitte einmal messen und hier eintragen)
+#   qlever start           # SPARQL-Endpunkt auf http://localhost:7003
+#   qlever ui              # optional: QLever-UI auf http://localhost:8176
+#
+# Ausgelegt auf einen Rechner mit ≤ 32 GB RAM (Indexierung ≈ 8–12 GB, Server ≈ 8–12 GB).
+
+[data]
+NAME         = factgrid
+GET_DATA_CMD = make -C .. fetch convert
+DESCRIPTION  = FactGrid (https://database.factgrid.de), JSON-Dump vom __DUMP_DATE__, konvertiert mit scripts/wb2rdf.py
+FORMAT       = ttl
+
+[index]
+INPUT_FILES     = factgrid.ttl.gz
+# (qlever hängt "| IndexBuilderMain" an – deshalb hier kein "a || b"; mit pigz: "pigz -dc ${INPUT_FILES}")
+CAT_INPUT_FILES = zcat ${INPUT_FILES}
+# languages-internal: Literale dieser Sprachen bleiben im internen Vokabular (schnellere Label-Zugriffe);
+# prefixes-external [""]: alle IRIs im externen Vokabular (spart RAM, wie beim Wikidata-Qleverfile);
+# ascii-prefixes-only: wb2rdf.py erzeugt nur ASCII-Prefixnamen → schnellerer Parser.
+SETTINGS_JSON   = { "languages-internal": ["de", "en"], "prefixes-external": [""], "ascii-prefixes-only": true, "num-triples-per-batch": 2000000 }
+STXXL_MEMORY    = 4G
+# Optionaler Volltextindex über alle Literale (Suche mit ql:contains-word "bach*"):
+#   TEXT_INDEX = from_literals   und   FACTGRID_TEXT_INDEX=1 für den MCP-Server
+TEXT_INDEX      = none
+
+[server]
+PORT                        = 7003
+ACCESS_TOKEN                = factgrid_lokal_bitte_aendern
+MEMORY_FOR_QUERIES          = 16G
+CACHE_MAX_SIZE              = 8G
+CACHE_MAX_SIZE_SINGLE_ENTRY = 4G
+TIMEOUT                     = 120s
+
+[runtime]
+# native = QLever-Binärpaket installiert (Debian/Ubuntu-Repo, s. docs.qlever.dev) – schneller als Container
+SYSTEM = docker
+IMAGE  = docker.io/adfreiburg/qlever:latest
+
+[ui]
+UI_CONFIG = default
+UI_PORT   = 8176

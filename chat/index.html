@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FactGrid Chat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237a5c2e'/%3E%3Ctext x='16' y='23' font-family='system-ui' font-size='19' font-weight='700' text-anchor='middle' fill='%23f5f4f0'%3EFG%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f5f4f0; --panel: #ffffff; --text: #1f1e1c; --muted: #6f6b63;
+    --accent: #7a5c2e; --user-bg: #ece5d8; --border: #ddd8cf; --mono-bg: #f0eee9;
+    --err: #a33a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191817; --panel: #22211f; --text: #e8e5df; --muted: #98938a;
+      --accent: #c9a86a; --user-bg: #2e2b26; --border: #38352f; --mono-bg: #1e1d1b;
+      --err: #e07862;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 18px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; flex: 1; font-weight: 600; }
+  header h1 small { color: var(--muted); font-weight: 400; margin-left: 8px; }
+  select, button {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  }
+  select { max-width: 320px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #log { flex: 1; overflow-y: auto; padding: 18px; }
+  .inner { max-width: 860px; margin: 0 auto; }
+  .msg { margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user {
+    background: var(--user-bg); border-radius: 12px; padding: 10px 14px;
+    margin-left: 15%; border: 1px solid var(--border);
+  }
+  .msg.assistant { padding: 2px 2px 8px; }
+  .msg .stats { display: block; color: var(--muted); font-size: 12px; margin-top: 8px; white-space: normal; }
+  .msg.error { color: var(--err); }
+  details.tool {
+    margin: 6px 0; font-size: 13px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--mono-bg); overflow: hidden;
+  }
+  details.tool summary {
+    cursor: pointer; padding: 5px 10px; color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  details.tool pre {
+    margin: 0; padding: 8px 10px; border-top: 1px solid var(--border);
+    font: 12px/1.5 ui-monospace, "SF Mono", Consolas, monospace;
+    overflow-x: auto; white-space: pre; color: var(--text);
+  }
+  .msg code, .msg pre {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 13px;
+    background: var(--mono-bg); border-radius: 4px;
+  }
+  .msg code { padding: 1px 5px; }
+  .msg pre { padding: 10px; overflow-x: auto; border: 1px solid var(--border); }
+  .qid { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
+  .qid:hover { background: var(--mono-bg); }
+  details.tool table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  details.tool th, details.tool td {
+    border-top: 1px solid var(--border); padding: 4px 10px; text-align: left;
+    vertical-align: top; white-space: nowrap; font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  details.tool th { color: var(--muted); font-weight: 600; }
+  details.tool .wrap { overflow-x: auto; }
+  details.tool .rows { padding: 4px 10px; color: var(--muted); font-size: 12px; }
+  .copy {
+    float: right; margin-left: 8px; padding: 0 6px; font-size: 12px; line-height: 1.6;
+    border-radius: 6px; background: var(--panel);
+  }
+  .banner {
+    max-width: 860px; margin: 0 auto 12px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--err); color: var(--err); font-size: 13px;
+  }
+  .examples { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .examples button {
+    display: block; width: 100%; text-align: left; margin: 6px 0; background: var(--panel);
+  }
+  footer { padding: 12px 18px 16px; background: var(--panel); border-top: 1px solid var(--border); }
+  .inputrow { display: flex; gap: 10px; max-width: 860px; margin: 0 auto; }
+  textarea {
+    flex: 1; resize: none; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; height: 46px;
+  }
+  textarea:focus, select:focus { outline: 1.5px solid var(--accent); }
+  #send { min-width: 90px; }
+  .busy { opacity: .55; pointer-events: none; }
+  .cursor::after { content: "▋"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>FactGrid Chat <small id="status">lädt …</small><small id="stand"></small></h1>
+  <select id="model" title="Modell wählen – auch mitten im Gespräch"></select>
+  <button id="reset" title="Neues Gespräch beginnen">Neu</button>
+</header>
+
+<div id="log"><div class="inner" id="loginner"></div></div>
+
+<footer>
+  <div class="inputrow">
+    <textarea id="q" placeholder="Frage an FactGrid … (Enter sendet, Shift+Enter = Zeilenumbruch)"></textarea>
+    <button id="send">Senden</button>
+    <button id="stop" hidden title="Laufende Antwort abbrechen">Stopp</button>
+  </div>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const SESSION_KEY = "factgrid-chat-session";
+let session = localStorage.getItem(SESSION_KEY) || crypto.randomUUID();
+localStorage.setItem(SESSION_KEY, session);
+let busy = false, controller = null, base = "https://database.factgrid.de/";
+
+const EXAMPLES = [
+  "Wie viele Menschen sind in FactGrid erfasst?",
+  "Welche Aussagen gibt es zu Johann Wolfgang von Goethe?",
+  "Welche Unterklassen hat die Klasse Mensch (Q7)?",
+];
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+// Q-/P-IDs auf die Live-Instanz verlinken – zum Nachschlagen und Gegenprüfen.
+function linkIds(html) {
+  return html.replace(/\b(wd:)?([QP]\d{2,})\b/g, (m, _pfx, id) =>
+    `<a class="qid" target="_blank" rel="noopener" href="${base}wiki/${id[0] === "Q" ? "Item" : "Property"}:${id}">${m}</a>`);
+}
+// Mini-Markdown auf bereits escapetem Text: Codeblöcke, Inline-Code, fett, Q-/P-IDs.
+function render(s) {
+  let h = esc(s);
+  h = h.replace(/```(?:\w*)\n([\s\S]*?)```/g, (_, c) => `<pre>${c}</pre>`);
+  h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  h = h.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  return linkIds(h);
+}
+function add(cls, html) {
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  div.innerHTML = html;
+  $("loginner").appendChild(div);
+  $("log").scrollTop = $("log").scrollHeight;
+  return div;
+}
+
+// TSV-Ergebnisse (so liefert der MCP-Server SPARQL) als Tabelle, sonst als Text.
+function toolBody(text) {
+  const lines = String(text).replace(/\s+$/, "").split("\n");
+  const cols = lines[0] ? lines[0].split("\t").length : 0;
+  const rows = [], rest = [];                       // Fußzeilen wie "(3 Zeilen)" haben keine Spalten
+  for (const l of lines.slice(1)) (l.split("\t").length === cols ? rows : rest).push(l);
+  if (cols < 2 || !rows.length) return `<pre>${linkIds(esc(text))}</pre>`;
+  const cell = (c, tag) => `<${tag}>${linkIds(esc(c))}</${tag}>`;
+  const head = "<tr>" + lines[0].split("\t").map(c => cell(c, "th")).join("") + "</tr>";
+  const body = rows.map(l => "<tr>" + l.split("\t").map(c => cell(c, "td")).join("") + "</tr>").join("");
+  return `<div class="wrap"><table>${head}${body}</table></div>` +
+         `<div class="rows">${esc(rest.length ? rest.join(" · ") : rows.length + " Zeile(n)")}</div>`;
+}
+
+function addTool(name, args) {
+  const d = document.createElement("details");
+  d.className = "tool";
+  const query = args && (args.query || args.sparql);
+  const rest = { ...(args || {}) };
+  delete rest.query; delete rest.sparql;
+  const arg = query ? Object.keys(rest).length ? JSON.stringify(rest) : "…" : JSON.stringify(args);
+  d.innerHTML = `<summary>${query ? '<button class="copy" title="SPARQL kopieren">kopieren</button>' : ""}` +
+                `→ ${esc(name)}(${esc(arg).slice(0, 200)})</summary><div class="body"></div>`;
+  if (query) {
+    d.querySelector(".copy").onclick = ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      navigator.clipboard.writeText(query).then(() => { ev.target.textContent = "kopiert"; });
+    };
+    d.querySelector(".body").innerHTML = `<pre>${linkIds(esc(query))}</pre>`;
+  }
+  $("loginner").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+  return d;
+}
+function fillTool(d, text) {
+  if (!d) return;
+  d.querySelector(".body").insertAdjacentHTML("beforeend", toolBody(text));
+}
+
+function showExamples() {
+  if ($("loginner").children.length) return;
+  const box = add("assistant intro", "<b>FactGrid lokal.</b> Fragen werden über den MCP-Server gegen den " +
+    "lokalen QLever-Index beantwortet; die Tool-Aufrufe darunter zeigen die erzeugte SPARQL." +
+    '<div class="examples">Zum Ausprobieren:</div>');
+  const ex = box.querySelector(".examples");
+  for (const q of EXAMPLES) {
+    const b = document.createElement("button");
+    b.textContent = q;
+    b.onclick = () => { $("q").value = q; send(); };
+    ex.appendChild(b);
+  }
+}
+
+async function loadInfo() {
+  try {
+    const d = await (await fetch("/api/info")).json();
+    if (d.base) base = d.base;
+    if (d.dump_date) {
+      $("stand").textContent = `Dump ${d.dump_date} · ${Number(d.triples).toLocaleString("de-DE")} Tripel`;
+      $("stand").title = d.text || "";
+    }
+  } catch (e) { /* Kopfzeile ohne Datenstand ist kein Beinbruch */ }
+}
+
+async function loadModels() {
+  try {
+    const data = await (await fetch("/api/models")).json();
+    const sel = $("model");
+    sel.innerHTML = "";
+    const groups = {};
+    for (const m of data.models) (groups[m.provider] ??= []).push(m);
+    for (const [prov, models] of Object.entries(groups)) {
+      const og = document.createElement("optgroup");
+      og.label = prov;
+      for (const m of models) {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.label;
+        o.title = m.note || "";
+        og.appendChild(o);
+      }
+      sel.appendChild(og);
+    }
+    if (data.default) sel.value = data.default;
+    const n = data.models.length;
+    $("status").textContent = n ? `${n} Modelle` : "keine Modelle gefunden";
+    const errs = Object.entries(data.errors || {});
+    if (!n && errs.length) {
+      $("loginner").insertAdjacentHTML("afterbegin", '<div class="banner">Kein Anbieter verfügbar: ' +
+        errs.map(([k, v]) => `<b>${esc(k)}</b> – ${esc(v)}`).join("; ") +
+        '<br>Schlüssel in <code>.env</code> eintragen (s. <code>.env.example</code>) und <code>make chat</code> neu starten.</div>');
+    } else if (errs.length) {
+      console.warn("Provider-Fehler:", data.errors);
+    }
+  } catch (e) {
+    $("status").textContent = "Server nicht erreichbar";
+  }
+}
+
+// Verlauf nach einem Neuladen wiederherstellen (der Server hält ihn je Sitzung im Speicher).
+async function loadHistory() {
+  let hist = [];
+  try {
+    hist = (await (await fetch("/api/history?session=" + encodeURIComponent(session))).json()).history || [];
+  } catch (e) { /* leerer Verlauf */ }
+  const pending = [];
+  for (const m of hist) {
+    if (m.role === "user") {
+      add("user", esc(m.content));
+    } else if (m.role === "assistant") {
+      for (const c of m.tool_calls || []) pending.push(addTool(c.name, c.args));
+      if ((m.content || "").trim()) add("assistant", render(m.content));
+    } else if (m.role === "tool") {
+      fillTool(pending.shift(), m.content);
+    }
+  }
+  showExamples();
+}
+
+function setBusy(on) {
+  busy = on;
+  document.querySelector(".inputrow").classList.toggle("busy", on);
+  $("send").hidden = on;
+  $("stop").hidden = !on;
+  if (!on) $("q").focus();
+}
+
+async function send() {
+  const q = $("q").value.trim();
+  if (!q || busy) return;
+  $("q").value = "";
+  setBusy(true);
+  document.querySelector(".msg.intro")?.remove();
+  add("user", esc(q));
+  let answer = add("assistant cursor", ""), text = "", tool = null;
+
+  controller = new AbortController();
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session, model: $("model").value, message: q }),
+      signal: controller.signal,
+    });
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        if (!frame.startsWith("data: ")) continue;
+        const ev = JSON.parse(frame.slice(6));
+        if (ev.type === "token") {
+          text += ev.text;
+          answer.innerHTML = render(text);
+          answer.classList.add("cursor");
+        } else if (ev.type === "tool_call") {
+          answer.classList.remove("cursor");
+          if (!text) answer.remove();                 // leere Zwischenblase vermeiden
+          tool = addTool(ev.name, ev.args);
+          answer = add("assistant cursor", "");       // Antwort geht nach den Tools weiter
+          text = "";
+        } else if (ev.type === "tool_result") {
+          fillTool(tool, ev.head);
+        } else if (ev.type === "done") {
+          answer.classList.remove("cursor");
+          answer.innerHTML = render(text) +
+            `<span class="stats">${ev.seconds} s · ${ev.calls} Tool-Aufrufe · ${esc(ev.model)}</span>`;
+        } else if (ev.type === "error") {
+          answer.classList.remove("cursor");
+          add("error", esc(ev.message));
+        }
+        $("log").scrollTop = $("log").scrollHeight;
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") add("error", "Abgebrochen.");
+    else add("error", "Verbindungsfehler: " + esc(String(e)));
+  }
+  answer.classList.remove("cursor");
+  controller = null;
+  setBusy(false);
+}
+
+$("send").onclick = send;
+$("stop").onclick = () => controller && controller.abort();
+$("q").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("reset").onclick = async () => {
+  try {
+    await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ session }) });
+  } catch (e) { /* egal, die neue Sitzung ist ohnehin leer */ }
+  session = crypto.randomUUID();
+  localStorage.setItem(SESSION_KEY, session);
+  $("loginner").innerHTML = "";
+  showExamples();
+  $("q").focus();
+};
+
+loadModels();
+loadInfo();
+loadHistory();
+$("q").focus();
+</script>
+</body>
+</html>

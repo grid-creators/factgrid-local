@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/factgrid-refresh.timer
+[Unit]
+Description=Wöchentliche Aktualisierung des FactGrid-Spiegels
+
+[Timer]
+OnCalendar=Sun 03:00
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,23 @@
+[project]
+name = "factgrid-mcp"
+version = "0.1.0"
+description = "MCP-Server über einem lokalen QLever-Index von FactGrid (Wikibase)"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.10",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "rdflib>=7"]
+chat = ["fastapi>=0.115", "uvicorn>=0.30", "anthropic>=1", "openai>=1.60"]
+
+[project.scripts]
+factgrid-mcp = "factgrid_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["factgrid_mcp"]

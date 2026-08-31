@@ -1,0 +1,14 @@
+dumps/
+qlever/
+eval/runs/
+tests/.cache-test/
+__pycache__/
+*.pyc
+.venv/
+mcp/.venv/
+mcp/uv.lock
+.env
+
+# Laufzeit-Logs
+*.server-log.txt
+*.resource-usage-log.tsv

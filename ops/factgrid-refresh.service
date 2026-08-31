@@ -1,0 +1,10 @@
+# ~/.config/systemd/user/factgrid-refresh.service  (systemctl --user enable --now factgrid-refresh.timer)
+[Unit]
+Description=FactGrid-Spiegel aktualisieren (Dump, Konvertierung, QLever-Index)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/factgrid-local
+ExecStart=/usr/bin/make refresh
+Nice=10
+IOSchedulingClass=idle
