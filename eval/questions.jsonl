@@ -5,3 +5,4 @@
 {"id": "statement-with-qualifier", "question": "Nenne fünf Statements mit Qualifikator, bei denen ein Mensch das Subjekt ist.", "reference_sparql": "SELECT ?x ?st ?pq ?q WHERE { ?x wdt:P2 wd:Q7 ; ?p ?st . ?st ?pq ?q . ?prop wikibase:claim ?p . ?qprop wikibase:qualifier ?pq . } LIMIT 5", "check": "rows>=1"}
 {"id": "open-birthplace", "question": "Welche in FactGrid erfassten Personen wurden in Gotha geboren? Gib maximal 20 Namen.", "reference_sparql": null, "check": "manual"}
 {"id": "open-timeline", "question": "Welche Ereignisse sind für das Jahr 1789 verzeichnet?", "reference_sparql": null, "check": "manual"}
+{"id": "open-edit-history", "question": "Wer hat den Eintrag zu Johann Wolfgang von Goethe wann bearbeitet, und wer hat ihn angelegt?", "reference_sparql": null, "check": "manual"}

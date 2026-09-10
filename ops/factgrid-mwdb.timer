@@ -1,0 +1,13 @@
+# /etc/systemd/system/factgrid-mwdb.timer
+# Täglich nachschauen: der Dump kommt monatlich (monthly_mediawiki_<datum>_….sql.gz), das
+# Laden dauert nur, wenn wirklich eine neue Datei da ist.
+[Unit]
+Description=Täglich prüfen, ob ein neuer MediaWiki-SQL-Dump zu laden ist
+
+[Timer]
+OnCalendar=*-*-* 04:30
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target

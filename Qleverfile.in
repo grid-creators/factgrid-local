@@ -29,10 +29,10 @@ TEXT_INDEX      = none
 
 [server]
 PORT                        = 7003
-ACCESS_TOKEN                = factgrid_lokal_bitte_aendern
-MEMORY_FOR_QUERIES          = 16G
-CACHE_MAX_SIZE              = 8G
-CACHE_MAX_SIZE_SINGLE_ENTRY = 4G
+ACCESS_TOKEN                = __ACCESS_TOKEN__
+MEMORY_FOR_QUERIES          = 6G
+CACHE_MAX_SIZE              = 2G
+CACHE_MAX_SIZE_SINGLE_ENTRY = 2G
 TIMEOUT                     = 120s
 
 [runtime]

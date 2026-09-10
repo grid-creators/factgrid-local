@@ -12,7 +12,8 @@ Ein lokales Modell wird nicht mehr unterstützt.
 
 Stand: 31. August 2026. Alle Zahlen zu FactGrid (Dump-Größe, Entitäten) sind an diesem Tag beobachtet;
 Zahlen zu Indexgröße und Laufzeiten sind Schätzungen, die beim ersten Lauf zu messen und hier
-einzutragen sind.
+einzutragen sind. Ergänzung vom 10. September 2026: Spiegel der MediaWiki-Datenbank für die
+Bearbeitungsgeschichte (Abschnitt 3.7) mit gemessenen Zahlen.
 
 ## 1. Ziel und Randbedingungen
 
@@ -42,11 +43,18 @@ Lieferung als Architekturdoku plus lauffähiges Gerüst.
                                    qlever/factgrid.ttl.gz  ──►  qlever index  ──►  qlever start
                                                                                         │  http://localhost:7003
                                                                                         ▼
-                                                            mcp/factgrid_mcp  (FastMCP, 4 Tools, stdio oder HTTP)
+                                                            mcp/factgrid_mcp  (FastMCP, 10 Tools, stdio oder HTTP)
                                                             • sparql          (Prefix-Injektion, Label-Service-Umschreibung, LIMIT-Deckel)
                                                             • search_entities (Text → Q-/P-ID)
                                                             • get_entity      (Item/Property kompakt, Labels aufgelöst)
                                                             • schema_overview (Klassen/Properties, gecacht)
+                                                            • edit_history / mw_sql / mw_schema  (Bearbeitungsgeschichte, s. u.)
+                                                                                        ▲
+   /srv/data/factgrid/mediawiki/monthly_mediawiki_<datum>.sql.gz   (MediaWiki-SQL-Dump, monatlich)      │
+                    │                                                                                   │
+                    ▼  scripts/mw_load.py  (nur öffentliche Tabellen, Aria, Bereinigung, atomarer Tausch)│
+          MariaDB factgrid_mw  (revision, page, actor, comment, logging, user, wbt_* …)  ◄── mwdb.py ───┘
+                                                                                         (Lesebenutzer, SELECT-only)
                                                                                         │
                                               ┌─────────────────────────────────────────┴────────────────────────┐
                                               ▼                                                                  ▼
@@ -141,7 +149,8 @@ injiziert die benötigten Prefixe in jede Query (Abschnitt 3.4).
 
 ### 3.4 MCP-Server – `mcp/factgrid_mcp`
 
-FastMCP-Server mit sieben Tools und einem Prompt. Die Zahl bleibt bewusst klein, weil jedes Tool-Schema
+FastMCP-Server mit zehn Tools und einem Prompt (sieben für den QLever-Index, drei für die
+MediaWiki-Datenbank, Abschnitt 3.7). Die Zahl bleibt bewusst klein, weil jedes Tool-Schema
 bei jedem Modellaufruf im Kontext steht – der Funktionsumfang entspricht dem gehosteten
 [wb-mcp.wmcloud.org/factgrid](https://wb-mcp.wmcloud.org/factgrid/docs) (Wikibase MCP auf Wikimedia Cloud),
 nur gegen den lokalen Spiegel statt gegen die Live-Instanz. Dessen `search_items`/`search_properties` sind
@@ -183,7 +192,9 @@ Konfiguration über Umgebungsvariablen (`.env.example`): `QLEVER_ENDPOINT`, `FAC
 `FACTGRID_INSTANCE_OF` (P2), `FACTGRID_MAX_ROWS`, `FACTGRID_TEXT_INDEX`. Start als stdio-Server (Claude Code)
 oder mit `--http` (Open WebUI: Streamable HTTP unter `http://127.0.0.1:8765/mcp`).
 
-Tests: `tests/test_mcp.py` startet einen rdflib-Mock-Endpunkt mit dem konvertierten Testgraphen und prüft
+Tests: `tests/test_chat_backends.py` prüft Modellliste, Schlüsselauflösung, Gesprächsablage und das DeepSeek-Backend
+(Nachrichtenformat, Zusammensetzen gestreamter Tool-Aufrufe, Endpunkte `/api/models` und `/api/keys`) ohne
+echte API-Aufrufe. `tests/test_mcp.py` startet einen rdflib-Mock-Endpunkt mit dem konvertierten Testgraphen und prüft
 alle vier Tools sowie die Umschreibungen (implizit/explizit, UNION/OPTIONAL/MINUS/Subquery, Kommentare,
 LIMIT, Update-Sperre) end-to-end – ohne laufenden QLever. Der Mock spricht dasselbe Protokoll, kennt aber
 QLevers Parameterregeln nicht; der erste Lauf gegen den echten QLever ist deshalb Teil von `make smoke`.
@@ -216,15 +227,108 @@ Antwort-Streaming, System-Prompt mit Cache-Breakpoint) und **OpenAI** (`OPENAI_A
 Function-Tools in `/v1/chat/completions` ab, sobald `reasoning_effort` nicht `none` ist, und nur die
 Responses-API führt die reasoning-Items über Tool-Aufrufe hinweg mit – zustandslos mit
 `store=false` plus `include: ["reasoning.encrypted_content"]`).
+Vierter Anbieter ist **DeepSeek** (`DEEPSEEK_API_KEY`; OpenAI-kompatible Chat-Completions-API unter
+`https://api.deepseek.com`, Modell `deepseek-flash` = DeepSeek V4.1 Flash mit 1 M Kontext). Der Denkmodus ist
+dort standardmäßig an (`DEEPSEEK_THINKING=disabled` schaltet ihn ab, `DEEPSEEK_REASONING_EFFORT=low|high`
+steuert ihn); die API verlangt, dass bei Requests mit Tools das `reasoning_content` in allen Folge-Requests
+zurückkommt – es wandert deshalb als Feld `reasoning` in den neutralen Verlauf und wird beim nächsten
+DeepSeek-Request wieder eingesetzt (andere Anbieter ignorieren das Feld).
+
+**Freigeschaltet** sind nur die Modelle aus `FACTGRID_CHAT_MODELS` (Komma-Liste `anbieter/modell`, etwa
+`openai/gpt-5.6-luna,deepseek/deepseek-flash`), Vorauswahl ist `FACTGRID_CHAT_MODEL`; eine andere Modell-ID aus
+dem Browser wird serverseitig durch die Vorauswahl ersetzt. Den Schlüssel eines Anbieters nimmt der Server
+zuerst aus dem Benutzerprofil (Dialog „Schlüssel“, `.chat-profiles.json`) und sonst aus `.env`
+(`OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, …) – so kann ein Anbieter für alle Angemeldeten über einen zentralen
+Schlüssel laufen, während ein anderer pro Person abgerechnet wird. Die Oberfläche zeigt je Modell, ob ein
+Schlüssel da ist, und der Schlüssel-Dialog gilt immer für den Anbieter des gewählten Modells.
 Anthropic und OpenAI melden ihre Modelle live, bei OpenRouter wäre die Liste mit einigen hundert Einträgen
-unbrauchbar – deshalb die Auswahl aus `.env`. Vorausgewählt ist `z-ai/glm-5.3-flash`.
+unbrauchbar – deshalb die Auswahl aus `.env`.
 Tool-Aufrufe erscheinen aufklappbar mit dem erzeugten SPARQL (Kopierknopf) und dem Ergebnis: TSV wird als
 Tabelle gerendert, Q-/P-IDs werden auf die Live-Instanz verlinkt, damit sich jede Antwort in einem Klick
-gegenprüfen lässt. Die Kopfzeile zeigt den Datenstand des Spiegels (`/api/info` → `get_wikibase_info`), der
-Verlauf übersteht ein Neuladen (Sitzungs-ID im `localStorage`, `/api/history`; „Neu" verwirft ihn auch auf
-dem Server), eine laufende Antwort lässt sich abbrechen, und wenn kein Anbieter konfiguriert ist, sagt ein
-Banner welcher Schlüssel fehlt statt eines leeren Dropdowns. Jede Antwort wird wie beim Mini-Agenten
+gegenprüfen lässt. Die Kopfzeile zeigt den Datenstand des Spiegels (`/api/info` → `get_wikibase_info`),
+eine laufende Antwort lässt sich abbrechen, und wenn kein Anbieter konfiguriert ist, sagt ein
+Banner welcher Schlüssel fehlt statt eines leeren Dropdowns.
+Die **Seitenleiste** listet alle bisherigen Gespräche des angemeldeten Benutzers (Titel = erste Frage,
+zuletzt benutzte zuerst); ein Klick öffnet eines, „+ Neues Gespräch“ beginnt ein leeres, das × am Eintrag
+löscht es nach einer Rückfrage. Die Gespräche liegen auf dem Server unter `.chat-history/<benutzer>/<id>.json`
+(`FACTGRID_CHAT_HISTORY`) und überstehen damit Neuladen wie Neustart; die Datei entsteht mit der ersten
+Frage und wird nach jeder Antwort geschrieben (`/api/chats`, `/api/history`, `DELETE /api/chats/{id}`).
+Jeder sieht nur die eigenen Gespräche; ohne Anmeldung teilen sich alle ein gemeinsames Konto. Jede Antwort wird wie beim Mini-Agenten
 als JSONL nach `eval/runs/` protokolliert (Feld `"ui": "chat"`).
+
+### 3.7 MediaWiki-Datenbank – Bearbeitungsgeschichte (`scripts/mw_load.py`, `mcp/factgrid_mcp/mwdb.py`)
+
+Der JSON-Dump enthält nur den aktuellen Zustand der Entitäten; **wer wann was bearbeitet hat**, steht
+allein in der MediaWiki-Datenbank. FactGrid liefert davon monatlich einen vollständigen MariaDB-Dump
+(`monthly_mediawiki_<datum>_….sql.gz`, aktuell 19,5 GB gzip = 171 GB SQL, 84 Tabellen; geladen
+werden daraus 21,1 Mio. Versionen, 2,0 Mio. Seiten, 8,4 Mio. Kommentare, 1 000 Benutzerkonten – 11 GB
+in MariaDB, 23 Minuten), der nach
+`/srv/data/factgrid/mediawiki/` (`MW_DUMP_DIR`) kopiert wird. `make mwdb` (`scripts/mw_load.py`) lädt
+daraus einen **Spiegel in die lokale MariaDB** (Datenbank `factgrid_mw`), gegen den der MCP-Server mit
+einem eigenen Lesebenutzer arbeitet.
+
+**Was geladen wird – und was bewusst nicht.** Der Dump ist die komplette Produktionsdatenbank, also auch
+Passwort-Hashes, E-Mail-Adressen, IP-Adressen, Beobachtungslisten und OAuth-Geheimnisse. Der Loader
+arbeitet deshalb mit einer **Allowlist** von 32 öffentlichen Tabellen (alles, was in der Wiki-Oberfläche
+ohnehin jeder sieht): `page`, `revision`, `actor`, `comment`, `logging`, `change_tag(_def)`, `redirect`,
+`page_props`, `page_restrictions`, `protected_titles`, `category(links)`, `image`, `user` (nur
+`user_id`, `user_name`, `user_registration`, `user_editcount`), `user_groups`, `user_former_groups`,
+die Wikibase-Termtabellen `wbt_*` (Labels, Beschreibungen, Aliase), `wb_items_per_site`,
+`wb_property_info`, `wb_id_counters`, `wbqc_constraints`, `site_stats`, `sites`, `site_identifiers`,
+`interwiki`. Unbekannte oder neue Tabellen bleiben automatisch draußen. Nicht geladen werden:
+
+* **privat:** die übrigen `user`-Spalten, `account_credentials`/`account_requests` (ConfirmAccount:
+  Klarnamen, E-Mails, IPs, Bewerbungstexte), `oauth_*`, `oauth2_access_tokens`, `bot_passwords`,
+  `watchlist(_expiry)`, `user_properties`, `user_newtalk`, `recentchanges` (enthält `rc_ip`),
+  `ip_changes`, `block`/`block_target`/`ipblocks_restrictions`, `echo_*` (Benachrichtigungen),
+  `archive` (gelöschte Versionen – nur vorübergehend geladen, s. u.), `log_search`;
+* **Ballast:** `text`, `content`, `slots` (alle Versionen als JSON, 160 GB der 171 GB – optional
+  mit `MW_TEXT=1`), `objectcache`, `l10n_cache`, `searchindex`, `querycache*`, `job`, `module_deps`,
+  `uploadstash`, `updatelog`, `pagelinks`/`linktarget`/`templatelinks`/`imagelinks`/`externallinks`/
+  `iwlinks`/`langlinks` (der Graph im QLever-Index deckt das ab), `wb_changes*`, `wbc_entity_usage`.
+
+Nach dem Laden **bereinigt** der Loader in der Staging-Datenbank: die `user`-Tabelle wird auf die vier
+öffentlichen Spalten reduziert; Logbucheinträge mit `log_deleted` oder privaten Typen (`suppress`,
+`oath`, …) werden gelöscht; Versionen mit verstecktem Benutzer oder Kommentar (`rev_deleted`) werden
+anonymisiert; und aus `comment` fliegen alle Kommentare, die nur noch an gelöschten oder versteckten
+Versionen hängen – Wikibase-Autokommentare enthalten Labels und Beschreibungen, bei Löschungen aus
+Datenschutzgründen also genau das Problem. `mw_meta` hält fest, welcher Dump wann geladen wurde und
+welche Tabellen fehlen; `get_wikibase_info` und `mw_schema` zeigen das dem Modell.
+
+**Technik.** `pigz -dc dump | Filter | mariadb factgrid_mw_new`: ein Zustandsautomat über den
+Tabellenabschnitten des mysqldump-Formats reicht nur erlaubte Abschnitte durch, setzt `ENGINE=Aria
+TRANSACTIONAL=0` (der Spiegel ist read-only und wird monatlich neu gebaut; Aria lädt mit
+`DISABLE/ENABLE KEYS` in einem Rutsch und kommt mit dem 128-MB-Pagecache aus) und macht aus
+`UNIQUE KEY` normale `KEY`s – `DISABLE KEYS` schaltet bei Aria/MyISAM nur nicht-eindeutige Indizes ab,
+UNIQUE-Indizes würden zeilenweise gepflegt (gemessen: zehnmal langsamer). Der Dump ist ohnehin konsistent.
+Geladen wird in `factgrid_mw_new`; erst nach der Bereinigung werden die Tabellen mit einem einzigen
+`RENAME TABLE` (atomar) nach `factgrid_mw` verschoben, dann entstehen die Views `v_revision`
+(revision ⋈ page ⋈ actor ⋈ comment), `v_log`, `v_item_terms` und `v_property_terms`, und der
+Lesebenutzer `factgrid_ro` bekommt `SELECT` auf `factgrid_mw.*` – sein Passwort erzeugt der Loader beim
+ersten Lauf und trägt es als `MW_DB_PASSWORD` in `.env` ein (Modus 600). Der laufende Chat-Dienst merkt
+vom Tausch nichts, weil jede Abfrage eine eigene Verbindung öffnet; nur der Schema-Cache wird geleert.
+Ein bereits geladener Dump wird übersprungen (`MW_FORCE=1` erzwingt), `make mwdb-list` zeigt die
+Tabellen mit Größen, `ops/factgrid-mwdb.timer` ist eine tägliche Prüfung auf neue Dumps.
+
+**Tools.** `edit_history(page=…, user=…, since=…, until=…, namespace=…)` beantwortet die
+Kernfrage direkt: für eine Seite (Q-ID, P-ID oder Titel wie `FactGrid:Directory of Properties`) alle
+Versionen mit Zeitpunkt (UTC), Benutzer, lesbar aufbereitetem Wikibase-Autokommentar („Aussage
+angelegt: P2: Q7“, „Label gesetzt [de]: …“), Größe und Differenz – dazu Anlage, Zahl der Bearbeitungen
+und Bearbeiter, Weiterleitungsziel bei Zusammenführungen und die Logbucheinträge der Seite; für einen
+Benutzer dessen Bearbeitungen mit Kontodaten und Gruppen; beides kombinierbar und zeitlich eingrenzbar.
+`mw_sql` führt beliebige `SELECT`s aus (Statistiken: Bearbeitungen pro Monat, aktivste Benutzer,
+meistbearbeitete Seiten, Logbuch), `mw_schema` liefert dem Modell vorher Konventionen (Zeitstempel
+`YYYYMMDDHHMMSS`, Namensräume, Titel), Views, Tabellen mit Spalten und Zeilenzahlen, Logbuchtypen,
+Markierungen und Beispielabfragen (gecacht je Dump). Lesend in vier Schichten: DB-Benutzer nur mit
+`SELECT`, Verbindung mit `TRANSACTION READ ONLY`, `max_statement_time` und `sql_select_limit`,
+Schlüsselwort-Sperre vor dem Verbindungsaufbau (kein `INSERT`/`UPDATE`/`INTO OUTFILE`/`SLEEP` …, nur
+ein Statement) und ein `LIMIT`-Deckel von 200 Zeilen. Die Item-/Property-Namensräume (120/122) werden
+aus der `page`-Tabelle bestimmt, nicht geraten. Konfiguration: `MW_DB_HOST/PORT/NAME/USER/PASSWORD`,
+`MW_DB_TIMEOUT`, `MW_DUMP_DIR`, `MW_DB_ADMIN` (`.env.example`); der MCP-Server liest `.env` jetzt
+selbst, bereits gesetzte Variablen (etwa aus `.mcp.json`) gewinnen.
+
+Tests: `tests/test_mwdb.py` prüft Filter, Bereinigung, Tausch, Views und Rechte an einem synthetischen
+Mini-Dump in `factgrid_mw_test` (wird wieder gelöscht) und lässt die drei Tools darauf laufen.
 
 ## 4. Schnellstart
 
@@ -240,6 +344,7 @@ make convert                              # → qlever/factgrid.ttl.gz  (FLAVOR=
 make index                                # QLever-Index bauen (Zeit/Platz beim ersten Lauf messen!)
 make start                                # Endpunkt http://localhost:7003
 make smoke                                # Referenzabfragen aus eval/questions.jsonl
+make mwdb                                 # optional: MediaWiki-SQL-Dump → MariaDB (Bearbeitungsgeschichte, Abschnitt 3.7)
 cd mcp && uv sync && cd ..                # MCP-Server installieren
 make agent                                # Mini-Agent auf der Kommandozeile (Default: OpenRouter)
 make chat                                 # oder Web-Chat mit Modellauswahl auf http://127.0.0.1:8177
@@ -257,6 +362,7 @@ FactGrid erfasst?“ sollte über `schema_overview` → `sparql` in einem Zug be
 | Konvertierung (`wb2rdf.py`, alle Kerne) | < 2 GB | ≈ 1,5–2,5 GB `.ttl.gz` | 3–10 min |
 | `qlever index` | 6–12 GB | 30–60 GB Index | 20–60 min |
 | `qlever start` | 8–12 GB (Cache + Abfragen) | – | Sekunden |
+| `make mwdb` (MediaWiki-DB, ohne `text`) | < 1 GB (Aria-Pagecache 128 MB + Sortierpuffer) | ≈ 11 GB (32 Tabellen, Aria) in `/var/lib/mysql` | 23 min gemessen (7 min davon Dekompression der 171 GB) |
 
 Das Modell braucht auf diesem Rechner keinen Speicher mehr – es läuft beim Anbieter; der Client
 (Claude Code, `make chat`, `make agent`) ist vernachlässigbar. Das gesamte Budget steht damit QLever zur
@@ -322,8 +428,9 @@ Nicht unterstützt sind Blazegraph-Erweiterungen jenseits des Label-Service (z. 
 
 ## 9. Roadmap
 
-Nächste sinnvolle Schritte, jeweils unabhängig voneinander: den Textindex aktivieren und die Suche darauf
-umstellen; die `FactGrid:Directory of Properties`-Seite als Resource in den MCP-Server holen (das ergänzt
+Nächste sinnvolle Schritte, jeweils unabhängig voneinander: die Seiteninhalte (`MW_TEXT=1`, 160 GB)
+mitladen und ein Tool für Versionsvergleiche darauf setzen („was genau wurde an Q… geändert“); den
+Textindex aktivieren und die Suche darauf umstellen; die `FactGrid:Directory of Properties`-Seite als Resource in den MCP-Server holen (das ergänzt
 `schema_overview` um die redaktionellen Erklärungen); Open WebUI als Mehrbenutzer-Oberfläche mit
 `factgrid-mcp --http`; die `eval/runs/`-Protokolle in ein Fine-Tuning-Set überführen; GeoSPARQL-Beispiele
 in `eval/questions.jsonl` aufnehmen.
@@ -341,10 +448,11 @@ factgrid-local/
 ├── scripts/fetch_dump.py   Dump-Beschaffung mit Vollständigkeitsprüfung
 ├── scripts/wb2rdf.py       JSON → Turtle (Wikibase-RDF-Modell)
 ├── scripts/ui_prefixes.py  FactGrid-Prefixe und Beispielabfragen für die QLever-UI
-├── mcp/                    factgrid-mcp (FastMCP, 7 Tools): server.py, qlever.py, labelservice.py, prefixes.py
+├── scripts/mw_load.py      MediaWiki-SQL-Dump → MariaDB (Allowlist, Bereinigung, Views, Lesebenutzer)
+├── mcp/                    factgrid-mcp (FastMCP, 10 Tools): server.py, qlever.py, labelservice.py, prefixes.py, mwdb.py
 ├── agent/mini_agent.py     Tool-Loop ohne Claude Code (OpenRouter/Anthropic)
 ├── chat/                   Web-Chatbot mit Modellauswahl (server.py, index.html)
 ├── eval/                   questions.jsonl, run_eval.py, runs/
-├── ops/                    systemd-Service und -Timer für die wöchentliche Aktualisierung
-└── tests/                  test_wb2rdf.py, test_mcp.py, mock_sparql.py
+├── ops/                    systemd-Units: wöchentlicher QLever-Refresh, Chat-Dienst, tägliche Prüfung auf neue SQL-Dumps
+└── tests/                  test_wb2rdf.py, test_mcp.py, test_mwdb.py, mock_sparql.py
 ```

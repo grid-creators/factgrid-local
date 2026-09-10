@@ -1,0 +1,20 @@
+# /etc/systemd/system/factgrid-chat.service
+# Web-Chat als Dienst. Bindet laut .env an 0.0.0.0:8177; von aussen erreichbar
+# ist der Port trotzdem nicht - ufw laesst nur 172.20.0.0/16 (das Netz des
+# nginx-proxy-manager) durch. Oeffentlich geht es nur ueber
+# https://factgrid-ai.grid-creators.com mit Basic Auth.
+[Unit]
+Description=FactGrid lokal - Web-Chat (FastAPI, Port 8177)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/apps/factgrid_local/mcp
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/root/.local/bin/uv run --all-extras python ../chat/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

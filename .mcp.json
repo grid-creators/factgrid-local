@@ -2,10 +2,16 @@
   "mcpServers": {
     "factgrid-local": {
       "command": "uv",
-      "args": ["--directory", "mcp", "run", "factgrid-mcp"],
+      "args": [
+        "--directory",
+        "mcp",
+        "run",
+        "--all-extras",
+        "factgrid-mcp"
+      ],
       "env": {
         "QLEVER_ENDPOINT": "http://localhost:7003",
-        "QLEVER_ACCESS_TOKEN": "factgrid_lokal_bitte_aendern",
+        "QLEVER_ACCESS_TOKEN": "",
         "QLEVER_SERVER_TIMEOUT": "120",
         "FACTGRID_LANG": "de",
         "FACTGRID_INSTANCE_OF": "P2",

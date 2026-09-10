@@ -37,7 +37,46 @@
   select { max-width: 320px; }
   button { cursor: pointer; }
   button:hover { border-color: var(--accent); }
+  #main { flex: 1; display: flex; min-height: 0; position: relative; }
+  #col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #log { flex: 1; overflow-y: auto; padding: 18px; }
+  /* Seitenleiste mit den gespeicherten Gesprächen */
+  #side {
+    width: 270px; flex: none; display: flex; flex-direction: column; min-height: 0;
+    background: var(--panel); border-right: 1px solid var(--border);
+  }
+  body.noside #side, body.noside #sidebg { display: none; }
+  #reset { display: none; }
+  body.noside #reset { display: inline-block; }
+  .sidehead { padding: 10px; border-bottom: 1px solid var(--border); }
+  .sidehead button { width: 100%; background: var(--panel); }
+  #chats { flex: 1; overflow-y: auto; padding: 6px; }
+  body.working #chats, body.working .sidehead { opacity: .55; }
+  .chat {
+    display: flex; align-items: center; gap: 6px; border-radius: 8px; padding: 6px 4px 6px 10px;
+    cursor: pointer; border: 1px solid transparent;
+  }
+  .chat:hover { background: var(--mono-bg); }
+  .chat.active { background: var(--user-bg); border-color: var(--border); }
+  .chat .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .chat .d { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .chat .del {
+    visibility: hidden; border: none; background: none; padding: 0 6px; color: var(--muted);
+    font-size: 17px; line-height: 1; border-radius: 6px;
+  }
+  .chat:hover .del, .chat.active .del { visibility: visible; }
+  .chat .del:hover { color: var(--err); background: var(--panel); }
+  .chat .del.confirm { visibility: visible; color: var(--err); font-size: 12px; padding: 2px 6px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px; }
+  #sidebg { display: none; }
+  @media (max-width: 720px) {
+    #side {
+      position: absolute; left: 0; top: 0; bottom: 0; z-index: 5; width: min(82vw, 300px);
+      box-shadow: 4px 0 18px rgba(0, 0, 0, .25);
+    }
+    #sidebg { display: block; position: absolute; inset: 0; z-index: 4; background: rgba(0, 0, 0, .3); }
+    .msg.user { margin-left: 6%; }
+  }
   .inner { max-width: 860px; margin: 0 auto; }
   .msg { margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.user {
@@ -99,25 +138,95 @@
   #send { min-width: 90px; }
   .busy { opacity: .55; pointer-events: none; }
   .cursor::after { content: "▋"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+  dialog.modal {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+    color: var(--text); padding: 0; width: min(94vw, 460px); font: inherit;
+  }
+  dialog.modal::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog.modal .body { padding: 16px 18px; }
+  dialog.modal h2 { margin: 0 0 4px; font-size: 16px; }
+  dialog.modal p.hint { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+  dialog.modal label { display: block; margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
+  dialog.modal select, dialog.modal input[type=password], dialog.modal input[type=text] {
+    width: 100%; font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  dialog.modal .row { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
+  dialog.modal .row label { margin: 0; font-size: 13px; color: var(--text); }
+  dialog.modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  dialog.modal .msg { margin-top: 12px; font-size: 13px; }
+  dialog.modal .msg.err { color: var(--err); }
+  dialog.modal .msg.ok { color: var(--accent); }
+  .keylist { margin: 14px 0 0; border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; }
+  .keylist div { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+  .keylist .state { color: var(--muted); }
+  .keylist .state.on { color: var(--accent); }
+  .keylist button { font-size: 12px; padding: 2px 8px; }
   @keyframes blink { 50% { opacity: 0; } }
 </style>
 </head>
 <body>
 <header>
+  <button id="sidebtn" title="Gespräche ein-/ausblenden" aria-label="Gespräche ein-/ausblenden">☰</button>
   <h1>FactGrid Chat <small id="status">lädt …</small><small id="stand"></small></h1>
   <select id="model" title="Modell wählen – auch mitten im Gespräch"></select>
+  <button id="keysbtn" title="API-Schlüssel im eigenen Profil hinterlegen">Schlüssel</button>
+  <small id="whoami" title="angemeldet als"></small>
+  <button id="logout" hidden title="Abmelden">Abmelden</button>
   <button id="reset" title="Neues Gespräch beginnen">Neu</button>
 </header>
 
-<div id="log"><div class="inner" id="loginner"></div></div>
+<dialog id="login" class="modal">
+  <form class="body" id="loginform">
+    <h2>Anmelden</h2>
+    <p class="hint">Der FactGrid-Chat ist nur für angemeldete Personen zugänglich.
+      Jede Anmeldung hat ein eigenes Profil mit eigenem API-Schlüssel.</p>
+    <label for="loginuser">Benutzer</label>
+    <input type="text" id="loginuser" autocomplete="username" spellcheck="false">
+    <label for="loginpw">Passwort</label>
+    <input type="password" id="loginpw" autocomplete="current-password">
+    <div class="msg" id="loginmsg"></div>
+    <div class="actions">
+      <button id="loginbtn">Anmelden</button>
+    </div>
+  </form>
+</dialog>
 
-<footer>
-  <div class="inputrow">
-    <textarea id="q" placeholder="Frage an FactGrid … (Enter sendet, Shift+Enter = Zeilenumbruch)"></textarea>
-    <button id="send">Senden</button>
-    <button id="stop" hidden title="Laufende Antwort abbrechen">Stopp</button>
+<dialog id="keys" class="modal">
+  <form method="dialog" class="body" id="keyform">
+    <h2>API-Schlüssel</h2>
+    <p class="hint" id="keyhint">
+      Der Schlüssel wird in deinem Profil gespeichert und nur für deine Fragen benutzt.
+      Er geht an den lokalen Chat-Server und von dort an den Anbieter – nie zurück an den Browser.
+    </p>
+    <label for="keyval">Schlüssel für <span id="keyprovlabel">den Anbieter</span></label>
+    <input type="password" id="keyval" autocomplete="off" spellcheck="false" placeholder="sk-…">
+    <div class="msg" id="keymsg"></div>
+    <div class="actions">
+      <button type="button" id="keydel" hidden title="Schlüssel aus dem Profil löschen">Entfernen</button>
+      <button type="button" id="keyclose">Schließen</button>
+      <button id="keysave">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="main">
+  <aside id="side">
+    <div class="sidehead"><button id="newchat" title="Neues Gespräch beginnen">+ Neues Gespräch</button></div>
+    <div id="chats"></div>
+  </aside>
+  <div id="sidebg"></div>
+  <div id="col">
+    <div id="log"><div class="inner" id="loginner"></div></div>
+    <footer>
+      <div class="inputrow">
+        <textarea id="q" placeholder="Frage an FactGrid … (Enter sendet, Shift+Enter = Zeilenumbruch)"></textarea>
+        <button id="send">Senden</button>
+        <button id="stop" hidden title="Laufende Antwort abbrechen">Stopp</button>
+      </div>
+    </footer>
   </div>
-</footer>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -130,6 +239,7 @@ const EXAMPLES = [
   "Wie viele Menschen sind in FactGrid erfasst?",
   "Welche Aussagen gibt es zu Johann Wolfgang von Goethe?",
   "Welche Unterklassen hat die Klasse Mensch (Q7)?",
+  "Wer hat den Eintrag zu Johann Wolfgang von Goethe wann bearbeitet?",
 ];
 
 function esc(s) {
@@ -221,42 +331,55 @@ async function loadInfo() {
   } catch (e) { /* Kopfzeile ohne Datenstand ist kein Beinbruch */ }
 }
 
+let MODELS = [];                                   // von /api/models: id, label, provider, has_key
+const MODEL_KEY = "factgrid-chat-model";           // zuletzt gewähltes Modell (nur Bequemlichkeit)
+
+function currentModel() {
+  return MODELS.find(m => m.id === $("model").value) || MODELS[0];
+}
+function modelStatus() {
+  const m = currentModel();
+  $("status").textContent = !m ? "kein Modell freigeschaltet" : m.has_key ? "" : "kein Schlüssel für " + m.provider;
+}
+
 async function loadModels() {
   try {
     const data = await (await fetch("/api/models")).json();
+    MODELS = data.models || [];
     const sel = $("model");
     sel.innerHTML = "";
-    const groups = {};
-    for (const m of data.models) (groups[m.provider] ??= []).push(m);
-    for (const [prov, models] of Object.entries(groups)) {
-      const og = document.createElement("optgroup");
-      og.label = prov;
-      for (const m of models) {
-        const o = document.createElement("option");
-        o.value = m.id;
-        o.textContent = m.label;
-        o.title = m.note || "";
-        og.appendChild(o);
-      }
-      sel.appendChild(og);
+    for (const m of MODELS) {
+      const o = document.createElement("option");
+      o.value = m.id;
+      o.textContent = m.label + (m.has_key ? "" : " (kein Schlüssel)");
+      o.title = m.provider || "";
+      sel.appendChild(o);
     }
-    if (data.default) sel.value = data.default;
-    const n = data.models.length;
-    $("status").textContent = n ? `${n} Modelle` : "keine Modelle gefunden";
-    const errs = Object.entries(data.errors || {});
-    if (!n && errs.length) {
-      $("loginner").insertAdjacentHTML("afterbegin", '<div class="banner">Kein Anbieter verfügbar: ' +
-        errs.map(([k, v]) => `<b>${esc(k)}</b> – ${esc(v)}`).join("; ") +
-        '<br>Schlüssel in <code>.env</code> eintragen (s. <code>.env.example</code>) und <code>make chat</code> neu starten.</div>');
-    } else if (errs.length) {
-      console.warn("Provider-Fehler:", data.errors);
+    let remembered = null;
+    try { remembered = localStorage.getItem(MODEL_KEY); } catch (e) { /* egal */ }
+    if (remembered && MODELS.some(m => m.id === remembered)) sel.value = remembered;
+    else if (data.default) sel.value = data.default;
+    // Fehlt für die Vorauswahl der Schlüssel, aber ein anderes Modell ist nutzbar: das nehmen,
+    // statt beim Start gleich den Schlüssel-Dialog zu öffnen.
+    const chosen = MODELS.find(m => m.id === sel.value);
+    if (chosen && !chosen.has_key) {
+      const usable = MODELS.find(m => m.has_key);
+      if (usable) sel.value = usable.id;
     }
+    // Bei nur einem freigeschalteten Modell ist die Auswahl reine Anzeige.
+    sel.disabled = MODELS.length < 2;
+    sel.title = MODELS.length < 2 ? "Einziges freigeschaltetes Modell" : "Modell wählen – auch mitten im Gespräch";
+    modelStatus();
   } catch (e) {
     $("status").textContent = "Server nicht erreichbar";
   }
 }
+$("model").addEventListener("change", () => {
+  try { localStorage.setItem(MODEL_KEY, $("model").value); } catch (e) { /* egal */ }
+  modelStatus();
+});
 
-// Verlauf nach einem Neuladen wiederherstellen (der Server hält ihn je Sitzung im Speicher).
+// Verlauf des aktuellen Gesprächs wiederherstellen (der Server hält ihn je Gespräch auf der Platte).
 async function loadHistory() {
   let hist = [];
   try {
@@ -276,9 +399,101 @@ async function loadHistory() {
   showExamples();
 }
 
+// --- Seitenleiste: gespeicherte Gespräche --------------------------------
+const SIDE_KEY = "factgrid-chat-side";           // Seitenleiste ein/aus (nur auf breiten Bildschirmen)
+let CHATS = [];                                  // von /api/chats: id, title, updated, count
+const narrow = () => window.innerWidth <= 720;
+
+function setSide(open, remember) {
+  document.body.classList.toggle("noside", !open);
+  if (remember && !narrow()) { try { localStorage.setItem(SIDE_KEY, open ? "1" : "0"); } catch (e) { /* egal */ } }
+}
+function initSide() {
+  let stored = null;
+  try { stored = localStorage.getItem(SIDE_KEY); } catch (e) { /* egal */ }
+  setSide(!narrow() && stored !== "0", false);   // schmal: immer zu, sonst wie zuletzt
+}
+function fmtDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+  const y = new Date(now); y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return "gestern";
+  return d.toLocaleDateString("de-DE", { day: "numeric", month: "short",
+                                          ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}) });
+}
+async function loadChats() {
+  try { CHATS = (await (await fetch("/api/chats")).json()).chats || []; } catch (e) { CHATS = []; }
+  renderChats();
+}
+function renderChats() {
+  const box = $("chats");
+  box.innerHTML = "";
+  if (!CHATS.length) { box.innerHTML = '<div class="empty">Noch keine gespeicherten Gespräche.</div>'; return; }
+  for (const c of CHATS) {
+    const row = document.createElement("div");
+    row.className = "chat" + (c.id === session ? " active" : "");
+    row.innerHTML = '<span class="t"></span><span class="d"></span>' +
+                    '<button class="del" title="Gespräch löschen" aria-label="Gespräch löschen">×</button>';
+    row.querySelector(".t").textContent = c.title || "(ohne Titel)";
+    row.title = (c.title || "") + (c.count ? ` · ${c.count} Frage${c.count === 1 ? "" : "n"}` : "");
+    row.querySelector(".d").textContent = fmtDate(c.updated);
+    row.onclick = () => openChat(c.id);
+    row.querySelector(".del").onclick = ev => { ev.stopPropagation(); removeChat(c, ev.target); };
+    box.appendChild(row);
+  }
+}
+async function openChat(id) {
+  if (busy) return;                              // erst die laufende Antwort abwarten oder stoppen
+  if (id !== session) {
+    session = id;
+    localStorage.setItem(SESSION_KEY, session);
+    $("loginner").innerHTML = "";
+    await loadHistory();
+    renderChats();
+  }
+  if (narrow()) setSide(false, false);
+  $("q").focus();
+}
+function newChat() {
+  if (busy) return;
+  session = crypto.randomUUID();                 // auf dem Server entsteht das Gespräch erst mit der ersten Frage
+  localStorage.setItem(SESSION_KEY, session);
+  $("loginner").innerHTML = "";
+  showExamples();
+  renderChats();
+  if (narrow()) setSide(false, false);
+  $("q").focus();
+}
+// Löschen in zwei Klicks: erst wird aus dem × ein „löschen?“, ein zweiter Klick darauf löscht;
+// ein Klick woanders (oder das nächste Neuzeichnen der Liste) setzt zurück.
+async function removeChat(c, btn) {
+  if (busy && c.id === session) return;
+  if (!btn.classList.contains("confirm")) {
+    btn.classList.add("confirm");
+    btn.textContent = "löschen?";
+    const reset = ev => { if (ev.target !== btn) { btn.classList.remove("confirm"); btn.textContent = "×"; } };
+    document.addEventListener("click", reset, { once: true, capture: true });
+    return;
+  }
+  try {
+    const r = await fetch("/api/chats/" + encodeURIComponent(c.id), { method: "DELETE" });
+    if (!r.ok) throw new Error(r.status);
+  } catch (e) { btn.textContent = "Fehler"; return; }
+  CHATS = CHATS.filter(x => x.id !== c.id);
+  if (c.id === session) newChat(); else renderChats();
+}
+$("newchat").onclick = newChat;
+$("reset").onclick = newChat;
+$("sidebtn").onclick = () => setSide(document.body.classList.contains("noside"), true);
+$("sidebg").onclick = () => setSide(false, false);
+window.addEventListener("resize", () => { if (narrow() && !document.body.classList.contains("noside")) setSide(false, false); });
+
 function setBusy(on) {
   busy = on;
   document.querySelector(".inputrow").classList.toggle("busy", on);
+  document.body.classList.toggle("working", on);
   $("send").hidden = on;
   $("stop").hidden = !on;
   if (!on) $("q").focus();
@@ -343,6 +558,7 @@ async function send() {
   answer.classList.remove("cursor");
   controller = null;
   setBusy(false);
+  loadChats();                                   // neues Gespräch mit Titel bzw. neue Reihenfolge
 }
 
 $("send").onclick = send;
@@ -350,22 +566,124 @@ $("stop").onclick = () => controller && controller.abort();
 $("q").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
-$("reset").onclick = async () => {
+// --- Anmeldung -----------------------------------------------------------
+function keyMsg(text, cls) {
+  const el = $("keymsg");
+  el.className = "msg" + (cls ? " " + cls : "");
+  el.textContent = text;
+}
+function loginMsg(text, cls) {
+  const el = $("loginmsg");
+  el.className = "msg" + (cls ? " " + cls : "");
+  el.textContent = text;
+}
+
+async function doLogin() {
+  const user = $("loginuser").value.trim(), password = $("loginpw").value;
+  if (!user || !password) { loginMsg("Benutzer und Passwort angeben.", "err"); return; }
+  loginMsg("Prüfe …", "");
   try {
-    await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ session }) });
-  } catch (e) { /* egal, die neue Sitzung ist ohnehin leer */ }
-  session = crypto.randomUUID();
-  localStorage.setItem(SESSION_KEY, session);
-  $("loginner").innerHTML = "";
-  showExamples();
-  $("q").focus();
+    const r = await fetch("/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user, password })
+    });
+    const d = await r.json();
+    if (!r.ok) { loginMsg(d.error || "Anmeldung fehlgeschlagen.", "err"); return; }
+    $("loginpw").value = "";
+    $("login").close();
+    await boot();
+  } catch (e) { loginMsg("Server nicht erreichbar.", "err"); }
+}
+
+$("loginform").addEventListener("submit", e => { e.preventDefault(); doLogin(); });
+// Der Anmeldedialog darf nicht mit Escape weggeklickt werden.
+$("login").addEventListener("cancel", e => e.preventDefault());
+
+$("logout").onclick = async () => {
+  try { await fetch("/api/logout", { method: "POST" }); } catch (e) { /* egal */ }
+  location.reload();
 };
 
-loadModels();
-loadInfo();
-loadHistory();
-$("q").focus();
+// --- API-Schlüssel (im eigenen Profil) -----------------------------------
+// Der Schlüssel-Dialog gilt immer für den Anbieter des gerade gewählten Modells.
+function keyProvider() {
+  const m = currentModel();
+  return m ? m.provider_id : "";
+}
+
+async function openKeys() {
+  keyMsg("", "");
+  try {
+    const d = await (await fetch("/api/keys?provider=" + encodeURIComponent(keyProvider()))).json();
+    $("keyprovlabel").textContent = d.provider_label || d.provider || "den Anbieter";
+    if (d.has_key) keyMsg("Ein eigener Schlüssel ist hinterlegt. Ein neuer ersetzt ihn.", "ok");
+    else if (d.server_key) keyMsg("Für " + (d.provider_label || d.provider) + " ist ein Schlüssel auf dem Server hinterlegt (" +
+                                  (d.key_var || ".env") + "). Ein eigener ist optional.", "ok");
+    $("keydel").hidden = !d.has_key;
+  } catch (e) { /* Dialog trotzdem oeffnen */ }
+  $("keys").showModal();
+  $("keyval").focus();
+}
+
+async function saveKey() {
+  const key = $("keyval").value.trim();
+  if (!key) { keyMsg("Bitte einen Schlüssel eingeben.", "err"); return; }
+  keyMsg("Prüfe …", "");
+  try {
+    const r = await fetch("/api/keys", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, provider: keyProvider() })
+    });
+    const d = await r.json();
+    if (!r.ok) { keyMsg(d.error || "Schlüssel abgelehnt.", "err"); return; }
+    $("keyval").value = "";
+    $("keydel").hidden = false;
+    keyMsg("Schlüssel geprüft und im Profil gespeichert.", "ok");
+    await loadModels();
+  } catch (e) { keyMsg("Server nicht erreichbar.", "err"); }
+}
+
+async function removeKey() {
+  try {
+    await fetch("/api/keys?provider=" + encodeURIComponent(keyProvider()), { method: "DELETE" });
+    $("keydel").hidden = true;
+    keyMsg("Schlüssel aus dem Profil entfernt.", "ok");
+    await loadModels();
+  } catch (e) { keyMsg("Entfernen fehlgeschlagen.", "err"); }
+}
+
+$("keysbtn").onclick = openKeys;
+$("keyclose").onclick = () => $("keys").close();
+$("keydel").onclick = removeKey;
+// Einziger submit-Knopf ist "Speichern", damit auch Enter im Feld speichert.
+$("keyform").addEventListener("submit", e => { e.preventDefault(); saveKey(); });
+
+// --- Start ---------------------------------------------------------------
+async function boot() {
+  let me;
+  try { me = await (await fetch("/api/me")).json(); }
+  catch (e) { $("status").textContent = "Server nicht erreichbar"; return; }
+
+  if (me.auth && !me.user) {          // Anmeldung noetig
+    $("login").showModal();
+    $("loginuser").focus();
+    return;
+  }
+  if (me.user) {
+    $("whoami").textContent = me.user;
+    $("logout").hidden = false;
+  }
+  await loadModels();
+  loadInfo();
+  loadHistory();
+  loadChats();
+  const m = currentModel();
+  if (m && !m.has_key) await openKeys();   // ohne Schluessel kann man nicht fragen
+  $("q").focus();
+}
+
+initSide();
+boot();
 </script>
 </body>
 </html>

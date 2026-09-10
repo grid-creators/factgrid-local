@@ -1,0 +1,14 @@
+# /etc/systemd/system/factgrid-mwdb.service  (systemctl enable --now factgrid-mwdb.timer)
+# Lädt den neuesten MediaWiki-SQL-Dump aus MW_DUMP_DIR in die lokale MariaDB, sobald eine
+# neue Datei dort liegt; ein bereits geladener Dump wird übersprungen (mw_meta.dump_file).
+[Unit]
+Description=FactGrid lokal - MediaWiki-Datenbank (Bearbeitungsgeschichte) aus dem SQL-Dump laden
+After=mariadb.service
+Requires=mariadb.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/apps/factgrid_local
+ExecStart=/usr/bin/make mwdb
+Nice=10
+IOSchedulingClass=idle

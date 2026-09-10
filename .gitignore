@@ -12,3 +12,11 @@ mcp/uv.lock
 # Laufzeit-Logs
 *.server-log.txt
 *.resource-usage-log.tsv
+
+# Benutzerprofile des Web-Chats (API-Schluessel!)
+.chat-profiles.json
+# Gespeicherte Gespraeche des Web-Chats (Seitenleiste)
+.chat-history/
+
+# Lokaler OpenAI-Schluessel (nie einchecken)
+.openai_key

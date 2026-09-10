@@ -11,7 +11,12 @@
 #   make test       Unit-/Integrationstests ohne QLever (rdflib-Mock)
 #   make smoke      Referenzabfragen gegen den laufenden QLever
 #   make agent      Plan B: leichtgewichtiger Agent auf der Kommandozeile (OpenRouter/Anthropic)
+#   make mwdb       MediaWiki-SQL-Dump (Bearbeitungsgeschichte) in die lokale MariaDB laden
+#   make mwdb-list  nur die Tabellen des SQL-Dumps mit Größen anzeigen
 
+# Alle uv-Aufrufe nutzen --all-extras: mcp/.venv ist EINE gemeinsame Umgebung.
+# 'uv sync --extra dev' wuerde die chat-Pakete daraus entfernen und den
+# laufenden Dienst factgrid-chat mitten im Betrieb zerlegen.
 SHELL      := /bin/bash
 .SHELLFLAGS := -o pipefail -ec
 ROOT       := $(abspath .)
@@ -21,8 +26,10 @@ WORKERS    ?= $(shell nproc)
 FLAVOR     ?= full          # full | truthy (truthy = kleiner Index zum Ausprobieren)
 PY         ?= python3
 QLEVER     ?= qlever        # pipx install qlever
+# harte Grenze des QLever-Containers (Host hat 15 GB)
+CONTAINER_MEMORY ?= 11g
 
-.PHONY: fetch convert index start stop status ui refresh mcp chat test smoke agent clean
+.PHONY: fetch convert index start stop status ui refresh mcp chat test smoke agent mwdb mwdb-list clean
 
 fetch:
 	$(PY) scripts/fetch_dump.py --dump-dir $(DUMPS)
@@ -40,7 +47,12 @@ convert: $(DUMPS)/latest.json.gz
 # mountet das Wurzelverzeichnis als /index – der Server findet dann keinen Index (Abschnitt 7).
 $(QDIR)/Qleverfile: Qleverfile.in $(QDIR)/DUMP_DATE
 	mkdir -p $(QDIR)
-	sed "s/__DUMP_DATE__/$$(cat $(QDIR)/DUMP_DATE 2>/dev/null || echo unbekannt)/" Qleverfile.in > $(QDIR)/Qleverfile
+# Der ACCESS_TOKEN kommt aus .env (nicht versioniert), damit in Qleverfile.in kein
+# Geheimnis steht. qlever/ ist ebenfalls in .gitignore.
+	TOKEN=$$(sed -n "s/^QLEVER_ACCESS_TOKEN=//p" .env 2>/dev/null | sed "s/[[:space:]]*#.*//" | head -1); \
+	[ -n "$$TOKEN" ] || TOKEN=factgrid_lokal_bitte_aendern; \
+	sed -e "s/__DUMP_DATE__/$$(cat $(QDIR)/DUMP_DATE 2>/dev/null || echo unbekannt)/" \
+	    -e "s|__ACCESS_TOKEN__|$$TOKEN|" Qleverfile.in > $(QDIR)/Qleverfile
 
 $(QDIR)/DUMP_DATE:
 	mkdir -p $(QDIR) && (cp $(DUMPS)/DUMP_DATE $(QDIR)/DUMP_DATE 2>/dev/null || echo unbekannt > $(QDIR)/DUMP_DATE)
@@ -50,6 +62,13 @@ index: $(QDIR)/Qleverfile
 
 start: $(QDIR)/Qleverfile
 	cd $(QDIR) && $(QLEVER) start
+# Harte Speichergrenze fuer den Container: QLevers MEMORY_FOR_QUERIES ist nur eine
+# Buchhaltung und wird ueberschritten. Ohne Deckel hat der Kernel auf dieser 15-GB-
+# Maschine schon einmal qlever-server per OOM-Killer erledigt (und haette ebenso gut
+# einen Nachbardienst treffen koennen). Bei SYSTEM = native greift die Zeile nicht.
+	-@docker update --memory $(CONTAINER_MEMORY) --memory-swap $(CONTAINER_MEMORY) \
+	   qlever.server.$$(sed -n 's/^NAME *= *//p' $(QDIR)/Qleverfile) >/dev/null 2>&1 \
+	   && echo "Container-Speichergrenze: $(CONTAINER_MEMORY)"
 
 stop:
 	cd $(QDIR) && $(QLEVER) stop || true
@@ -66,21 +85,37 @@ refresh: fetch convert stop index start
 	@echo "Spiegel aktualisiert: Dump vom $$(cat $(QDIR)/DUMP_DATE)"
 
 mcp:
-	cd mcp && uv run factgrid-mcp --http
+	cd mcp && uv run --all-extras factgrid-mcp --http
 
 chat:
-	cd mcp && uv sync --extra chat >/dev/null && uv run --extra chat python ../chat/server.py
+	cd mcp && uv sync --all-extras >/dev/null && uv run --all-extras python ../chat/server.py
 
 test:
-	cd mcp && uv sync --extra dev >/dev/null
-	cd mcp && uv run --extra dev python ../tests/test_wb2rdf.py
-	cd mcp && uv run --extra dev python ../tests/test_mcp.py
+	cd mcp && uv sync --all-extras >/dev/null
+	cd mcp && uv run --all-extras python ../tests/test_wb2rdf.py
+	cd mcp && uv run --all-extras python ../tests/test_mcp.py
+	cd mcp && uv run --all-extras python ../tests/test_mwdb.py
+	cd mcp && uv run --all-extras python ../tests/test_chat_backends.py
 
 smoke:
-	$(PY) eval/run_eval.py --smoke
+	cd mcp && uv sync --all-extras >/dev/null
+	cd mcp && uv run --all-extras python ../eval/run_eval.py --smoke
 
 agent:
 	cd mcp && uv run --with openai --with anthropic python ../agent/mini_agent.py
+
+# MediaWiki-Datenbank: neuester *.sql.gz aus MW_DUMP_DIR (.env, Default /srv/data/factgrid/mediawiki)
+# → MariaDB-Datenbank factgrid_mw, nur öffentliche Tabellen (README 3.7). Ein bereits geladener
+# Dump wird übersprungen (MW_FORCE=1 erzwingt), MW_DUMP=pfad lädt eine bestimmte Datei,
+# MW_TEXT=1 nimmt die Seiteninhalte mit (≈ 160 GB, Stunden). Der Schema-Cache wird geleert.
+mwdb:
+	$(PY) scripts/mw_load.py --env .env $(if $(MW_DUMP),--dump $(MW_DUMP)) \
+	  $(if $(MW_FORCE),--force) $(if $(MW_TEXT),--with-text)
+	rm -f ~/.cache/factgrid-mcp/*.txt
+	@echo "Hinweis: laufende Dienste (factgrid-chat) sehen die neuen Tools erst nach einem Neustart."
+
+mwdb-list:
+	$(PY) scripts/mw_load.py --list $(if $(MW_DUMP),--dump $(MW_DUMP))
 
 clean:
 	rm -rf $(QDIR)/factgrid.ttl.gz.part
