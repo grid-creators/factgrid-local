@@ -454,5 +454,10 @@ factgrid-local/
 ├── chat/                   Web-Chatbot mit Modellauswahl (server.py, index.html)
 ├── eval/                   questions.jsonl, run_eval.py, runs/
 ├── ops/                    systemd-Units: wöchentlicher QLever-Refresh, Chat-Dienst, tägliche Prüfung auf neue SQL-Dumps
-└── tests/                  test_wb2rdf.py, test_mcp.py, test_mwdb.py, mock_sparql.py
+├── tests/                  test_wb2rdf.py, test_mcp.py, test_mwdb.py, mock_sparql.py
+└── LICENSE                 MIT
 ```
+
+## 11. Lizenz
+
+MIT, siehe `LICENSE`.
