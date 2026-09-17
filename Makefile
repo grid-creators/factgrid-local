@@ -11,6 +11,8 @@
 #   make test       Unit-/Integrationstests ohne QLever (rdflib-Mock)
 #   make smoke      Referenzabfragen gegen den laufenden QLever
 #   make agent      Plan B: leichtgewichtiger Agent auf der Kommandozeile (OpenRouter/Anthropic)
+#   make briefing   Wochenbriefing (Probelauf, nichts wird verschickt)
+#   make briefing-send  Wochenbriefing wirklich verschicken (sonst montags per Timer)
 #   make mwdb       MediaWiki-SQL-Dump (Bearbeitungsgeschichte) in die lokale MariaDB laden
 #   make mwdb-list  nur die Tabellen des SQL-Dumps mit Größen anzeigen
 
@@ -29,7 +31,8 @@ QLEVER     ?= qlever        # pipx install qlever
 # harte Grenze des QLever-Containers (Host hat 15 GB)
 CONTAINER_MEMORY ?= 11g
 
-.PHONY: fetch convert index start stop status ui refresh mcp chat test smoke agent mwdb mwdb-list clean
+.PHONY: fetch convert index start stop status ui refresh mcp chat test smoke agent briefing \
+        briefing-send mwdb mwdb-list clean
 
 fetch:
 	$(PY) scripts/fetch_dump.py --dump-dir $(DUMPS)
@@ -96,6 +99,7 @@ test:
 	cd mcp && uv run --all-extras python ../tests/test_mcp.py
 	cd mcp && uv run --all-extras python ../tests/test_mwdb.py
 	cd mcp && uv run --all-extras python ../tests/test_chat_backends.py
+	cd mcp && uv run --all-extras python ../tests/test_briefing.py
 
 smoke:
 	cd mcp && uv sync --all-extras >/dev/null
@@ -103,6 +107,15 @@ smoke:
 
 agent:
 	cd mcp && uv run --with openai --with anthropic python ../agent/mini_agent.py
+
+# Wochenbriefing an die Community-Liste (ops/factgrid-briefing.timer, montags 08:00 UTC).
+# Ohne --send passiert nichts als Anzeigen; BRIEFING_ARGS reicht Argumente durch, etwa
+# 'make briefing BRIEFING_ARGS=--facts' (nur die Zahlen) oder '--weeks-back 2'.
+briefing:
+	cd mcp && uv run --all-extras python ../scripts/weekly_briefing.py $(BRIEFING_ARGS)
+
+briefing-send:
+	cd mcp && uv run --all-extras python ../scripts/weekly_briefing.py --send $(BRIEFING_ARGS)
 
 # MediaWiki-Datenbank: neuester *.sql.gz aus MW_DUMP_DIR (.env, Default /srv/data/factgrid/mediawiki)
 # → MariaDB-Datenbank factgrid_mw, nur öffentliche Tabellen (README 3.7). Ein bereits geladener

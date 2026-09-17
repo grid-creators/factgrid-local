@@ -1,0 +1,17 @@
+# /etc/systemd/system/factgrid-briefing.service  (systemctl enable --now factgrid-briefing.timer)
+# Wochenbriefing an die FactGrid-Community-Liste: Zahlen der vergangenen Woche aus dem
+# MediaWiki-Spiegel, formuliert von einem Sprachmodell, verschickt über das Postfach aus .env.
+# Geht etwas schief (leere Modellantwort, keine Bearbeitungen, Postfach weg), bricht das
+# Skript ab und verschickt nichts - der Fehler steht in journalctl -u factgrid-briefing.
+[Unit]
+Description=FactGrid lokal - Wochenbriefing an die Community-Liste
+After=mariadb.service network-online.target
+Requires=mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/apps/factgrid_local
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/make briefing-send
+Nice=10

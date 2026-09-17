@@ -405,6 +405,53 @@ Mini-Dump in `factgrid_mw_test` (wird wieder gelöscht) und lässt die drei Tool
 Voraussetzungen: Python ≥ 3.10, `uv` (oder `pipx`), `pigz` (optional), Docker oder das native QLever-Paket,
 ein OpenRouter-Schlüssel (oder ein Anthropic-Schlüssel bzw. `ant auth login`).
 
+### 3.8 Wochenbriefing an die Liste – `scripts/weekly_briefing.py`
+
+Montags 08:00 UTC schickt `ops/factgrid-briefing.timer` ein Briefing über die vergangene Woche
+(Montag bis Sonntag, UTC) an `BRIEFING_TO` – eingerichtet ist die Community-Liste
+`factgrid-community@listserv.dfn.de`. Der Ablauf in einem Satz: **die Zahlen kommen aus SQL, die
+Sprache aus dem Modell.**
+
+`collect()` holt aus dem MediaWiki-Spiegel (Abschnitt 3.7) alles, was im Briefing vorkommen darf:
+Bearbeitungen, berührte und neu angelegte Seiten, aktive Konten, der Vergleich zur Vorwoche, die
+Tageswerte, Namensräume, die aktivsten Konten, die Art der Änderungen aus den Wikibase-
+Autokommentaren, die dort genannten Properties (mit Label), die meistbearbeiteten Items (mit
+Label), je ein Beispielkommentar der größten Konten, das Logbuch und die Markierungen
+(Rücksetzungen, Tool-Bearbeitungen). Daraus entsteht ein Faktenblock in englischer Sprache, und
+**nur** dieser Block geht an das Modell (`BRIEFING_MODEL`, Vorgabe `deepseek-flash`): es hat
+keinen Datenbankzugriff und kann nichts nachschlagen, es formuliert. Der Prompt verlangt Fließtext
+mit zwei Konventionen – `## ` für Zwischenüberschriften und `**…**` um jeden Kontennamen und jede
+Zahl, die zählt –, verbietet Deutungen und Lob und schreibt vor, Items und Properties mit Label
+**und** Kennung zu nennen (`Sophie Schwarz (née Becker) (Q1196919)`), weil eine nackte Q-ID
+niemandem etwas sagt.
+
+Verschickt wird als `multipart/alternative`: reiner Text (die `**` fallen weg) und HTML, in dem
+die Hervorhebungen fett stehen und Q-/P-IDs auf die Live-Instanz verlinkt sind; alles andere ist
+escapet, ein spitzer Winkel in einem Item-Label kann das Layout also nicht aufbrechen. Über dem
+Text steht in jeder Mail ein **fest im Skript verdrahteter Hinweis**, dass sie automatisch
+entsteht, woher die Zahlen kommen und dass niemand gegenliest – der darf nicht aus dem Modell
+kommen, sonst könnte ausgerechnet diese Angabe halluziniert sein. Der Header `Auto-Submitted:
+auto-generated` hält Abwesenheitsantworten von der Liste fern.
+
+Nichts wird verschickt, wenn etwas nicht stimmt: keine Bearbeitungen im Zeitraum, leere oder zu
+kurze Antwort des Modells, fehlendes Format (`SUBJECT:` / `---`), fehlende Hervorhebungen oder
+kein Postfach in `.env` – jedes Mal Abbruch mit Meldung in `journalctl -u factgrid-briefing`
+statt einer halben Mail an ein paar hundert Leute. Endet der Spiegel vor dem Ende der
+Berichtswoche, bricht das Skript nicht ab, schreibt dem Modell aber ein `CAVEAT` in die Fakten,
+das im Briefing landet.
+
+```
+make briefing                          # Probelauf: Briefing auf die Konsole, nichts geht raus
+make briefing BRIEFING_ARGS=--facts    # nur die Zahlen, ohne Modell
+make briefing-send                     # wirklich verschicken (sonst macht das der Timer)
+python3 scripts/weekly_briefing.py --send --to ich@example.org   # Testempfänger
+python3 scripts/weekly_briefing.py --weeks-back 2                # die vorletzte Woche
+```
+
+Tests: `tests/test_briefing.py` prüft die Berechnung der Berichtswoche (auch über Zeitzonen), den
+Faktenblock, die Abbruchregeln, das Rendern (fett, verlinkte IDs, Escaping) und die fertige
+zweiteilige Nachricht – ohne Datenbank, ohne Modell, ohne SMTP.
+
 ```bash
 pipx install qlever                       # QLever-CLI
 cd factgrid-local
@@ -529,5 +576,6 @@ factgrid-local/
 ```
 
 ## 11. Lizenz
+├── scripts/weekly_briefing.py  Wochenbriefing an die Community-Liste (montags 08:00 UTC)
 
 MIT, siehe `LICENSE`.
