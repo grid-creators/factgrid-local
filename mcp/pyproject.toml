@@ -12,7 +12,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "rdflib>=7"]
-chat = ["fastapi>=0.115", "uvicorn>=0.30", "anthropic>=1", "openai>=1.60"]
+# pypdf: Text aus angehängten PDFs im Web-Chat (ohne das Paket sagt der Upload,
+# dass PDF nicht geht – Textdateien gehen weiterhin).
+chat = ["fastapi>=0.115", "uvicorn>=0.30", "anthropic>=1", "openai>=1.60", "pypdf>=5"]
 
 [project.scripts]
 factgrid-mcp = "factgrid_mcp.server:main"

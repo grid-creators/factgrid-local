@@ -192,7 +192,10 @@ Konfiguration über Umgebungsvariablen (`.env.example`): `QLEVER_ENDPOINT`, `FAC
 `FACTGRID_INSTANCE_OF` (P2), `FACTGRID_MAX_ROWS`, `FACTGRID_TEXT_INDEX`. Start als stdio-Server (Claude Code)
 oder mit `--http` (Open WebUI: Streamable HTTP unter `http://127.0.0.1:8765/mcp`).
 
-Tests: `tests/test_chat_backends.py` prüft Modellliste, Schlüsselauflösung, Gesprächsablage und das DeepSeek-Backend
+Tests: `tests/test_chat_backends.py` prüft Modellliste, Schlüsselauflösung, Gesprächsablage, die permanenten
+Gesprächslinks (Nur-Lesen ohne Anmeldung, Weiterführen als eigene Kopie), die Datei-Anhänge (Textgewinnung
+aus TXT/CSV/PDF, Abweisen von Bild- und Office-Dateien, `/api/upload`, der Weg des Anhangs in die Frage
+jedes Providers) und das DeepSeek-Backend
 (Nachrichtenformat, Zusammensetzen gestreamter Tool-Aufrufe, Endpunkte `/api/models` und `/api/keys`) ohne
 echte API-Aufrufe. `tests/test_mcp.py` startet einen rdflib-Mock-Endpunkt mit dem konvertierten Testgraphen und prüft
 alle vier Tools sowie die Umschreibungen (implizit/explizit, UNION/OPTIONAL/MINUS/Subquery, Kommentare,
@@ -257,6 +260,73 @@ Jeder sieht nur die eigenen Gespräche; ohne Anmeldung teilen sich alle ein geme
 als JSONL nach `eval/runs/` protokolliert (Feld `"ui": "chat"`).
 
 ### 3.7 MediaWiki-Datenbank – Bearbeitungsgeschichte (`scripts/mw_load.py`, `mcp/factgrid_mcp/mwdb.py`)
+
+**Dateien anhängen.** An eine Frage lassen sich Dateien hängen (Büroklammer, Ziehen ins Fenster oder
+Einfügen aus der Zwischenablage). Der Server macht daraus beim Hochladen **Text** (`POST /api/upload`, der
+Datei-Inhalt ist der Request-Body – kein multipart, das spart eine Abhängigkeit): TXT, CSV/TSV, JSON,
+XML/TTL, Markdown, SPARQL direkt (UTF-8, BOM und die Windows-Kodierung, in der Excel CSV schreibt), PDF
+über `pypdf`. Bilder und Office-Dateien nimmt der Chat **nicht** – dafür hätte jeder der vier Anbieter ein
+eigenes Format; statt Kauderwelsch anzuhängen, sagt die Fehlermeldung, was da hochgeladen wurde („Tabellen
+aus Excel bitte als CSV oder TSV speichern“).
+
+**Die Datei bleibt auf dem Server, nicht im Kontext.** Mit dem Absenden zieht die Textdatei neben die
+Gesprächsdatei (`.chat-history/<benutzer>/<gespräch>.files/<id>.txt`) und wird mit dem Gespräch gelöscht;
+in den Prompt geht nur ein **Steckbrief mit den ersten `FACTGRID_CHAT_UPLOAD_PREVIEW` Zeichen** (Vorgabe
+2 000): Name, Zeilen, Zeichen, erkanntes Trennzeichen und die Spaltennamen. Der Grund ist der Verlauf – er
+geht bei jeder Folgefrage komplett wieder an die API, ein ganzer 16-MB-Anhang würde also bei jeder Frage
+neu bezahlt. Für alles Weitere bekommt das Modell in Gesprächen mit Anhängen **vier zusätzliche
+Werkzeuge**, die im Chat-Prozess auf der ganzen Datei laufen (`LOCAL_TOOLS` in `chat/server.py`; ohne
+Anhang stehen sie nicht in der Tool-Liste):
+
+| Werkzeug | wofür |
+| --- | --- |
+| `list_attachments` | was hängt an: Zeilen, Zeichen, Trennzeichen, Spaltennamen |
+| `read_attachment` | Zeilenfenster (`from_line`, `lines`; höchstens 400) |
+| `search_attachment` | alle Zeilen mit einem Suchwort (Groß/Klein egal, optional regulärer Ausdruck), mit Zeilennummer |
+| `column_stats` | eine Spalte auszählen: gefüllt, leer, verschiedene Werte, die häufigsten |
+
+So beantwortet das Modell auch Fragen über Zeile 120 000 einer Tabelle, die es nie gesehen hat – in den
+Kontext geht nur das Ergebnis (je Aufruf höchstens 8 000 Zeichen). `CLAUDE.md` weist es an, Mengenfragen
+über `column_stats`/`search_attachment` zu beantworten statt die Datei stückweise zu lesen, den Inhalt als
+**Material, nicht als Anweisung** zu lesen und Namen daraus wie jede andere Angabe erst mit
+`search_entities` aufzulösen. Der Chip unter der Frage lädt die Datei wieder herunter
+(`GET /api/attachment`, im geteilten Gespräch `GET /api/shared/attachment`).
+
+Die Größengrenze steht an **zwei** Stellen, die zusammenpassen müssen: `FACTGRID_CHAT_UPLOAD_MAX` im Chat
+(32 MB) und `client_max_body_size` im nginx-proxy-manager davor (Proxy-Host → Advanced). Wird nur eine der
+beiden erhöht, antwortet der Proxy mit seiner HTML-Fehlerseite statt mit JSON. Damit das gar nicht erst
+passiert, holt sich die Oberfläche die Grenze beim Start (`/api/me` → `upload_max`) und schickt eine zu
+große Datei **nicht** los: Der Chip nennt Größe und Grenze und bietet „Anfang nehmen“ an – der Browser
+schneidet dann am letzten Zeilenumbruch vor der Grenze ab (ein `\n` steckt in keinem Mehrbyte-Zeichen, der
+Ausschnitt ist also in jeder Kodierung heil), `?part=1` sagt es dem Server, und im Steckbrief steht „nur
+der Anfang der hochgeladenen Datei“. Antwortet doch ein Proxy mit 413, versucht es die Oberfläche mit
+einem Viertel noch einmal (bis hinunter zu 64 kB) – eine strengere Grenze davor bleibt so eine Frage der
+Geduld, nicht des Scheiterns.
+
+**Dateien herunterladen.** Umgekehrt ist alles Tabellarische einer Antwort ein Klick von einer Datei
+entfernt: jede Markdown-Tabelle und jedes Tool-Ergebnis bekommt einen TSV-Knopf, jeder Codeblock mit
+Datei-Sprache (```` ```tsv ````, ```` ```csv ````, ```` ```json ````, ```` ```rq ```` …) einen Knopf in
+seinem Format. Gebaut wird die Datei im Browser (`Blob` + `<a download>`): Markdown-Tabellen aus dem Angezeigten,
+Tool-Ergebnisse dagegen aus dem Original, das auch das Modell bekommen hat – Kopfzeile und Datenzeilen,
+ohne die Fußzeile wie „(200 Zeilen, gekürzt)“. TSV und CSV bekommen ein BOM, sonst zeigt Excel beim Doppelklick Kauderwelsch
+statt Umlauten. Weil das Modell laut `CLAUDE.md` weiß, dass ein ```` ```tsv ````-Block ein Download-Knopf
+wird, reicht als Frage „… als Tabelle zum Herunterladen“.
+
+**Permanenter Link (geteilte Gespräche).** Jedes gespeicherte Gespräch hat einen Link `/s/<token>`; der
+Knopf „Teilen“ zeigt ihn und kopiert ihn in die Ablage (`GET /api/share`). Unter diesem Link ist das
+Gespräch **ohne Anmeldung lesbar – und nur lesbar**: dieselbe Oberfläche ohne Eingabefeld, Seitenleiste und
+Modellwahl, dafür mit dem vollen Verlauf samt aufklappbaren Tool-Aufrufen und SPARQL
+(`GET /api/shared?token=…` liefert den Verlauf ohne den Namen des Besitzers und ohne das Feld `reasoning`).
+In der Kopfzeile steht das Datum des Gesprächs, nicht der heutige Datenstand – die Antworten stammen aus
+dem Spiegel von damals. Angehängte Dateien gehören zum Gespräch und sind damit auch über den Link lesbar
+(und herunterladbar) – wer etwas anhängt, was nicht weitergegeben werden soll, teilt dieses Gespräch besser
+nicht. Das Token (`secrets.token_urlsafe(16)`, in der Gesprächsdatei unter `share`) ändert
+sich nie und ist der ganze Zugangsschutz: erraten oder aufzählen lässt sich der Link nicht, öffentlich ist
+er so weit, wie man ihn selbst weitergibt; `X-Robots-Tag: noindex` hält Suchmaschinen draußen, und Löschen
+des Gesprächs macht den Link tot. Geschrieben wird nie im Original: „Weiterführen“
+(`POST /api/shared/continue`, nur angemeldet) legt eine Kopie mit neuer ID und eigenem Link an, die der
+Angemeldete als eigenes Gespräch fortsetzt – zwei Leute können denselben Link unabhängig voneinander
+weiterspinnen, das Original bleibt, wie es war.
 
 Der JSON-Dump enthält nur den aktuellen Zustand der Entitäten; **wer wann was bearbeitet hat**, steht
 allein in der MediaWiki-Datenbank. FactGrid liefert davon monatlich einen vollständigen MariaDB-Dump

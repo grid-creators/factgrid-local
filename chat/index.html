@@ -37,6 +37,7 @@
   select { max-width: 320px; }
   button { cursor: pointer; }
   button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; border-color: var(--border); }
   #main { flex: 1; display: flex; min-height: 0; position: relative; }
   #col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #log { flex: 1; overflow-y: auto; padding: 18px; }
@@ -48,6 +49,14 @@
   body.noside #side, body.noside #sidebg { display: none; }
   #reset { display: none; }
   body.noside #reset { display: inline-block; }
+  /* Geteiltes Gespräch (/s/<token>): nur Lesen – Eingabe, Seitenleiste, Modellwahl entfallen */
+  body.shared #side, body.shared #sidebg, body.shared #sidebtn, body.shared #model,
+  body.shared #keysbtn, body.shared #sharebtn, body.shared #reset,
+  body.shared .inputrow { display: none; }
+  #sharedfoot { display: none; align-items: center; gap: 10px; max-width: 860px; margin: 0 auto; }
+  body.shared #sharedfoot { display: flex; }
+  #sharedfoot .hint { flex: 1; color: var(--muted); font-size: 13px; }
+  body.shared #sharedfoot[hidden] { display: none; }
   .sidehead { padding: 10px; border-bottom: 1px solid var(--border); }
   .sidehead button { width: 100%; background: var(--panel); }
   #chats { flex: 1; overflow-y: auto; padding: 6px; }
@@ -70,6 +79,8 @@
   .empty { color: var(--muted); font-size: 13px; padding: 10px; }
   #sidebg { display: none; }
   @media (max-width: 720px) {
+    header { flex-wrap: wrap; row-gap: 8px; }
+    header h1 { flex: 1 0 100%; }
     #side {
       position: absolute; left: 0; top: 0; bottom: 0; z-index: 5; width: min(82vw, 300px);
       box-shadow: 4px 0 18px rgba(0, 0, 0, .25);
@@ -78,7 +89,8 @@
     .msg.user { margin-left: 6%; }
   }
   .inner { max-width: 860px; margin: 0 auto; }
-  .msg { margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg { margin: 10px 0; overflow-wrap: anywhere; }
+  .msg.user, .msg.error { white-space: pre-wrap; }
   .msg.user {
     background: var(--user-bg); border-radius: 12px; padding: 10px 14px;
     margin-left: 15%; border: 1px solid var(--border);
@@ -106,6 +118,22 @@
   }
   .msg code { padding: 1px 5px; }
   .msg pre { padding: 10px; overflow-x: auto; border: 1px solid var(--border); }
+  .msg p, .msg pre, .msg ul, .msg ol, .msg blockquote, .msg .wrap { margin: 0 0 10px; }
+  .msg h1, .msg h2, .msg h3, .msg h4, .msg h5, .msg h6 { margin: 16px 0 6px; line-height: 1.3; font-weight: 650; }
+  .msg > :first-child { margin-top: 0; }
+  .msg.assistant > :last-child { margin-bottom: 0; }
+  .msg h1 { font-size: 20px; } .msg h2 { font-size: 18px; } .msg h3 { font-size: 16px; }
+  .msg h4, .msg h5, .msg h6 { font-size: 15px; }
+  .msg ul, .msg ol { padding-left: 24px; }
+  .msg li { margin: 2px 0; }
+  .msg li > ul, .msg li > ol { margin-bottom: 0; }
+  .msg blockquote { border-left: 3px solid var(--border); padding: 0 0 0 10px; color: var(--muted); }
+  .msg hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+  .msg a { color: var(--accent); }
+  .msg .wrap { overflow-x: auto; }
+  .msg table { border-collapse: collapse; font-size: 14px; }
+  .msg th, .msg td { border: 1px solid var(--border); padding: 4px 10px; text-align: left; vertical-align: top; }
+  .msg th { background: var(--mono-bg); font-weight: 600; }
   .qid { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
   .qid:hover { background: var(--mono-bg); }
   details.tool table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -115,7 +143,11 @@
   }
   details.tool th { color: var(--muted); font-weight: 600; }
   details.tool .wrap { overflow-x: auto; }
-  details.tool .rows { padding: 4px 10px; color: var(--muted); font-size: 12px; }
+  details.tool .rows {
+    display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+    color: var(--muted); font-size: 12px;
+  }
+  details.tool .rows button.dl { margin-left: auto; }
   .copy {
     float: right; margin-left: 8px; padding: 0 6px; font-size: 12px; line-height: 1.6;
     border-radius: 6px; background: var(--panel);
@@ -137,7 +169,9 @@
   textarea:focus, select:focus { outline: 1.5px solid var(--accent); }
   #send { min-width: 90px; }
   .busy { opacity: .55; pointer-events: none; }
-  .cursor::after { content: "▋"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+  .cursor:empty::after, .cursor > :last-child::after {
+    content: "▋"; color: var(--accent); animation: blink 1s steps(1) infinite;
+  }
   dialog.modal {
     border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
     color: var(--text); padding: 0; width: min(94vw, 460px); font: inherit;
@@ -162,6 +196,36 @@
   .keylist .state { color: var(--muted); }
   .keylist .state.on { color: var(--accent); }
   .keylist button { font-size: 12px; padding: 2px 8px; }
+  dialog.modal .linkrow { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+  dialog.modal .linkrow input { flex: 1; min-width: 0; font-size: 13px; }
+  /* Anhänge: Chips über dem Eingabefeld und in der eigenen Frage */
+  #attach { display: flex; flex-wrap: wrap; gap: 6px; max-width: 860px; margin: 0 auto 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 320px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--bg);
+    padding: 3px 4px 3px 11px; font-size: 12.5px;
+  }
+  .chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .s { color: var(--muted); white-space: nowrap; }
+  .chip.err { border-color: var(--err); }
+  .chip.err .s { color: var(--err); white-space: normal; }
+  .chip .x { border: none; background: none; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 5px; }
+  .chip .x:hover { color: var(--err); }
+  .msg .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .msg .files .chip { background: var(--panel); cursor: pointer; padding: 3px 11px; }
+  .msg .files .chip:hover { border-color: var(--accent); }
+  #attachbtn { font-size: 15px; padding: 6px 9px; }
+  .chip .part { border: none; background: none; color: var(--accent); font-size: 12px; padding: 0 4px; }
+  #attachnote { max-width: 860px; margin: -4px auto 8px; color: var(--muted); font-size: 12px; }
+  body.drag footer { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  body.shared #attach, body.shared #attachbtn { display: none; }
+  /* Download-Knopf an Tabellen, Datei-Codeblöcken und Tool-Ergebnissen */
+  .dlbar { display: flex; justify-content: flex-end; margin: 0 0 4px; }
+  button.dl {
+    padding: 1px 8px; font-size: 12px; line-height: 1.6; border-radius: 6px;
+    background: var(--panel); color: var(--muted);
+  }
+  button.dl:hover { color: var(--accent); }
   @keyframes blink { 50% { opacity: 0; } }
 </style>
 </head>
@@ -171,6 +235,7 @@
   <h1>FactGrid Chat <small id="status">lädt …</small><small id="stand"></small></h1>
   <select id="model" title="Modell wählen – auch mitten im Gespräch"></select>
   <button id="keysbtn" title="API-Schlüssel im eigenen Profil hinterlegen">Schlüssel</button>
+  <button id="sharebtn" title="Permanenten Link zu diesem Gespräch anzeigen">Teilen</button>
   <small id="whoami" title="angemeldet als"></small>
   <button id="logout" hidden title="Abmelden">Abmelden</button>
   <button id="reset" title="Neues Gespräch beginnen">Neu</button>
@@ -210,6 +275,23 @@
   </form>
 </dialog>
 
+<dialog id="share" class="modal">
+  <form method="dialog" class="body" id="shareform">
+    <h2>Permanenter Link</h2>
+    <p class="hint">Wer diesen Link hat, kann das Gespräch lesen – ohne Anmeldung, aber nur lesend.
+      Der Link bleibt gültig, solange das Gespräch nicht gelöscht wird. Wer angemeldet ist, kann das
+      Gespräch von dort aus als eigenes weiterführen; das bekommt dann einen eigenen Link.</p>
+    <div class="linkrow">
+      <input type="text" id="shareurl" readonly spellcheck="false" hidden>
+    </div>
+    <div class="msg" id="sharemsg"></div>
+    <div class="actions">
+      <button type="button" id="sharecopy" hidden>Kopieren</button>
+      <button id="shareclose">Schließen</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="main">
   <aside id="side">
     <div class="sidehead"><button id="newchat" title="Neues Gespräch beginnen">+ Neues Gespräch</button></div>
@@ -219,10 +301,20 @@
   <div id="col">
     <div id="log"><div class="inner" id="loginner"></div></div>
     <footer>
+      <div id="attach" hidden></div>
+      <div id="attachnote" hidden>Von dieser Datei liegt nur der Anfang auf dem Server – was
+        danach kommt, kennt der Chat nicht.</div>
       <div class="inputrow">
+        <input type="file" id="filepick" multiple hidden>
+        <button id="attachbtn" title="Datei anhängen (auch per Ziehen oder Einfügen)"
+                aria-label="Datei anhängen">&#128206;</button>
         <textarea id="q" placeholder="Frage an FactGrid … (Enter sendet, Shift+Enter = Zeilenumbruch)"></textarea>
         <button id="send">Senden</button>
         <button id="stop" hidden title="Laufende Antwort abbrechen">Stopp</button>
+      </div>
+      <div id="sharedfoot">
+        <span class="hint">Geteiltes Gespräch – nur zum Lesen.</span>
+        <button id="continuebtn" title="Als eigenes Gespräch mit eigenem Link fortsetzen">Weiterführen</button>
       </div>
     </footer>
   </div>
@@ -230,6 +322,8 @@
 
 <script>
 const $ = id => document.getElementById(id);
+// /s/<token>: dieselbe Seite als Nur-Lese-Ansicht eines geteilten Gesprächs.
+const SHARED = location.pathname.startsWith("/s/") ? decodeURIComponent(location.pathname.slice(3)) : "";
 const SESSION_KEY = "factgrid-chat-session";
 let session = localStorage.getItem(SESSION_KEY) || crypto.randomUUID();
 localStorage.setItem(SESSION_KEY, session);
@@ -250,13 +344,195 @@ function linkIds(html) {
   return html.replace(/\b(wd:)?([QP]\d{2,})\b/g, (m, _pfx, id) =>
     `<a class="qid" target="_blank" rel="noopener" href="${base}wiki/${id[0] === "Q" ? "Item" : "Property"}:${id}">${m}</a>`);
 }
-// Mini-Markdown auf bereits escapetem Text: Codeblöcke, Inline-Code, fett, Q-/P-IDs.
+// --- Herunterladen ---------------------------------------------------------
+// Alles, was der Chat als Datei anbietet, wird im Browser aus dem Angezeigten gebaut:
+// Tabellen (auch die Markdown-Tabellen einer Antwort) als TSV, Codeblöcke mit einer
+// Datei-Sprache (```tsv, ```csv, ```json …) in ihrem Format, Tool-Ergebnisse wörtlich.
+const DL_EXT = { tsv: "tsv", csv: "csv", json: "json", jsonl: "jsonl", txt: "txt", text: "txt",
+                 md: "md", markdown: "md", sparql: "rq", rq: "rq", ttl: "ttl", turtle: "ttl",
+                 xml: "xml", sql: "sql", yaml: "yaml", yml: "yaml" };
+function preExt(lang) {
+  const ext = DL_EXT[(lang || "").trim().toLowerCase().split(/\s+/)[0]];
+  return ext ? ` data-ext="${ext}"` : "";
+}
+let dlNr = 0;
+function fileName(kind, ext) {
+  return `factgrid-${kind}-${new Date().toISOString().slice(0, 10)}-${++dlNr}.${ext}`;
+}
+// Tabellen kommen mit BOM: sonst zeigt Excel beim Doppelklick Umlaute als Kauderwelsch.
+function saveText(name, text, ext) {
+  const bom = ext === "tsv" || ext === "csv" ? "﻿" : "";
+  saveBlob(name, new Blob([bom + text], { type: "text/plain;charset=utf-8" }));
+}
+// Datei vom Server speichern: der Content-Disposition-Header macht daraus einen Download,
+// der Link bleibt auf der Seite.
+function saveFrom(url, name) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+function saveBlob(name, blob) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+function dlButton(label, title, fn) {
+  const b = document.createElement("button");
+  b.className = "dl";
+  b.type = "button";
+  b.textContent = label;
+  b.title = title;
+  b.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); fn(); };
+  return b;
+}
+// Eine gerenderte Tabelle zurück in TSV. Tabulatoren in einer Zelle würden die Spalten
+// verschieben und werden deshalb zu Leerzeichen.
+function tableToTsv(t) {
+  return [...t.rows].map(r => [...r.cells].map(c => c.textContent.replace(/\s+/g, " ").trim()).join("\t")).join("\n");
+}
+// Nach dem Rendern einer Antwort: Tabellen und Datei-Codeblöcke bekommen einen Knopf.
+// (Tool-Ergebnisse nicht – die bietet fillTool wörtlich an, statt sie zurückzubauen.)
+function decorate(el) {
+  for (const t of el.querySelectorAll("table")) {
+    if (t.dataset.dl) continue;
+    t.dataset.dl = "1";
+    const bar = document.createElement("div");
+    bar.className = "dlbar";
+    bar.appendChild(dlButton("TSV ↓", "Tabelle als TSV-Datei speichern",
+      () => saveText(fileName("tabelle", "tsv"), tableToTsv(t), "tsv")));
+    const box = t.closest(".wrap") || t;
+    box.parentNode.insertBefore(bar, box);
+  }
+  for (const pre of el.querySelectorAll("pre[data-ext]")) {
+    if (pre.dataset.dl) continue;
+    pre.dataset.dl = "1";
+    const ext = pre.dataset.ext;
+    const bar = document.createElement("div");
+    bar.className = "dlbar";
+    bar.appendChild(dlButton(ext.toUpperCase() + " ↓", "Als Datei speichern",
+      () => saveText(fileName("daten", ext), pre.textContent, ext)));
+    pre.parentNode.insertBefore(bar, pre);
+  }
+  return el;
+}
+
+// Mini-Markdown auf bereits escapetem Text: Codeblöcke werden zuerst ausgeklammert (kein Markdown darin),
+// dann Blockebene (Überschriften, Listen, Tabellen, Zitate, Trennlinien, Absätze) und Zeilenebene.
+// Platzhalter sind Zeichen aus dem Unicode-Privatbereich (U+E000 ff.), die in Antworten nicht vorkommen.
 function render(s) {
-  let h = esc(s);
-  h = h.replace(/```(?:\w*)\n([\s\S]*?)```/g, (_, c) => `<pre>${c}</pre>`);
-  h = h.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  h = h.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  return linkIds(h);
+  const pre = [];
+  const h = esc(s).replace(/```([^\n]*)\n([\s\S]*?)```/g, (_, lang, c) =>
+    `${pre.push(`<pre${preExt(lang)}>${linkIds(c.replace(/\n$/, ""))}</pre>`) - 1}`);
+  return blocks(h.split("\n")).replace(/(\d+)/g, (_, k) => pre[k]);
+}
+const RX = {
+  head: /^ {0,3}(#{1,6}) +(.*?) *#* *$/,
+  hr: /^ {0,3}([-*_]) *(?:\1 *){2,}$/,
+  item: /^( *)([-*+]|\d{1,9}[.)]) +(.*)$/,
+  quote: /^ {0,3}&gt; ?(.*)$/,
+};
+// Blockebene über Zeilen; Absätze behalten ihre Zeilenumbrüche (<br>), Leerzeilen trennen Blöcke.
+function blocks(lines) {
+  let out = "";
+  for (let i = 0; i < lines.length;) {
+    const l = lines[i], t = table(lines, i);
+    let m;
+    if (!l.trim()) i++;
+    else if (l.trim().startsWith("")) { out += l.trim(); i++; }
+    else if (t) { out += t.html; i = t.next; }
+    else if ((m = RX.head.exec(l))) { out += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`; i++; }
+    else if (RX.hr.test(l)) { out += "<hr>"; i++; }
+    else if (RX.quote.test(l)) {
+      const q = [];
+      while (i < lines.length && (m = RX.quote.exec(lines[i]))) { q.push(m[1]); i++; }
+      out += `<blockquote>${blocks(q)}</blockquote>`;
+    }
+    else if (RX.item.test(l)) { const r = list(lines, i); out += r.html; i = r.next; }
+    else {
+      const para = [l]; i++;
+      while (i < lines.length && lines[i].trim() && !startsBlock(lines, i)) para.push(lines[i++]);
+      out += `<p>${para.map(x => inline(x)).join("<br>")}</p>`;
+    }
+  }
+  return out;
+}
+// Darf diese Zeile einen Absatz unterbrechen? (Nummerierung nur mit „1.“, wie in CommonMark)
+function startsBlock(lines, i) {
+  const l = lines[i], m = RX.item.exec(l);
+  return l.trim().startsWith("") || RX.head.test(l) || RX.hr.test(l) || RX.quote.test(l) ||
+         !!(m && !/^(?!1[.)])\d/.test(m[2])) || !!table(lines, i);
+}
+// Eine Liste ab Zeile i; der Einzug des ersten Punkts bestimmt die Ebene. Tiefer eingerückte Punkte
+// werden verschachtelt, eingerückte Textzeilen gehören zum Punkt, eine nicht eingerückte Zeile beendet die Liste.
+function list(lines, i) {
+  const ind = lines[i].search(/\S/), ordered = /\d/.test(lines[i].trim()[0]);
+  const start = ordered ? parseInt(lines[i], 10) : 1;
+  const items = [];
+  while (i < lines.length) {
+    const l = lines[i], m = RX.item.exec(l);
+    if (!l.trim()) {                                 // Leerzeile: weiter, wenn danach ein Listenpunkt folgt
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      const n = j < lines.length && RX.item.exec(lines[j]);
+      if (!n || n[1].length < ind) break;
+      i = j; continue;
+    }
+    const d = l.search(/\S/) - ind;
+    if (m && d === 0) {
+      if (/\d/.test(m[2]) !== ordered) break;        // Wechsel Aufzählung ↔ Nummerierung: neue Liste
+      items.push(inline(m[3])); i++;
+    } else if (m && d > 0) {
+      const r = list(lines, i); items[items.length - 1] += r.html; i = r.next;
+    } else if (d > 0) {
+      items[items.length - 1] += "<br>" + inline(l.trim()); i++;
+    } else break;
+  }
+  const tag = ordered ? "ol" : "ul", attr = ordered && start !== 1 ? ` start="${start}"` : "";
+  return { html: `<${tag}${attr}>${items.map(x => `<li>${x}</li>`).join("")}</${tag}>`, next: i };
+}
+// Eine Tabelle ab Zeile i: Kopfzeile, Trennzeile (---, :--, :-:, --:), dann Zeilen mit „|“ bis zur
+// Leerzeile. Liefert HTML und den Index der ersten Zeile danach, sonst null.
+function table(lines, i) {
+  if (i + 1 >= lines.length || !lines[i].includes("|") || !lines[i + 1].includes("|")) return null;
+  const head = cells(lines[i]), sep = cells(lines[i + 1]);
+  if (head.length !== sep.length || !sep.every(c => /^:?-+:?$/.test(c))) return null;
+  const align = sep.map(c => c.endsWith(":") ? (c.startsWith(":") ? "center" : "right") : "");
+  const row = (cs, tag) => "<tr>" + head.map((_, k) =>
+    `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ""}>${inline(cs[k] || "")}</${tag}>`).join("") + "</tr>";
+  const rows = [];
+  let j = i + 2;
+  while (j < lines.length && lines[j].includes("|")) rows.push(row(cells(lines[j++]), "td"));
+  return { html: `<div class="wrap"><table><thead>${row(head, "th")}</thead><tbody>${rows.join("")}</tbody></table></div>`,
+           next: j };
+}
+// Zellen einer Tabellenzeile: äußere Pipes weg, an unmaskierten „|“ trennen, „\|“ wird „|“.
+function cells(l) {
+  l = l.trim().replace(/\\\|/g, "").replace(/^\|/, "").replace(/\|$/, "");
+  return l.split("|").map(c => c.trim().replace(//g, "|"));
+}
+// Zeilenebene: Code und Links (nur http/https) werden vor Fett/Kursiv/Durchgestrichen und der
+// Q-/P-ID-Verlinkung geschützt. Ein „*“ mit Leerzeichen dahinter (wie in „* 1749“) bleibt Text.
+function inline(s) {
+  const keep = [];
+  const stash = html => `${keep.push(html) - 1}`;
+  const a = (href, text) => stash(`<a href="${href}" target="_blank" rel="noopener">${text}</a>`);
+  s = s.replace(/`([^`]+)`/g, (_, c) => stash(`<code>${linkIds(c)}</code>`));
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g, (_, t, u) => a(u, t));
+  s = s.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g, (_, u) => a(u, u));
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s]*[^\s.,:;!?)"'])/g, (_, pfx, u) => pfx + a(u, u));
+  s = s.replace(/\*\*(?!\s)((?:[^*\n]|\*(?!\*))*?[^*\s])\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|[^\w])__(?!\s)([^_\n]*?[^_\s])__(?!\w)/g, "$1<b>$2</b>");
+  s = s.replace(/\*(?!\s)([^*\n]*?[^*\s])\*/g, "<i>$1</i>");
+  s = s.replace(/(^|[^\w])_(?!\s)([^_\n]*?[^_\s])_(?!\w)/g, "$1<i>$2</i>");
+  s = s.replace(/~~(?!\s)([^~\n]*?[^~\s])~~/g, "<s>$1</s>");
+  return linkIds(s).replace(/(\d+)/g, (_, k) => keep[k]);
 }
 function add(cls, html) {
   const div = document.createElement("div");
@@ -267,18 +543,25 @@ function add(cls, html) {
   return div;
 }
 
-// TSV-Ergebnisse (so liefert der MCP-Server SPARQL) als Tabelle, sonst als Text.
-function toolBody(text) {
+// TSV-Ergebnis (so liefert der MCP-Server SPARQL) zerlegen: Kopfzeile und Zeilen mit
+// derselben Spaltenzahl; Fußzeilen wie "(3 Zeilen)" haben keine Spalten und bleiben Rest.
+// null heißt: kein TSV, also als Text zeigen.
+function asTsv(text) {
   const lines = String(text).replace(/\s+$/, "").split("\n");
   const cols = lines[0] ? lines[0].split("\t").length : 0;
-  const rows = [], rest = [];                       // Fußzeilen wie "(3 Zeilen)" haben keine Spalten
+  const rows = [], rest = [];
   for (const l of lines.slice(1)) (l.split("\t").length === cols ? rows : rest).push(l);
-  if (cols < 2 || !rows.length) return `<pre>${linkIds(esc(text))}</pre>`;
+  return cols >= 2 && rows.length ? { head: lines[0].split("\t"), rows, rest } : null;
+}
+
+function toolBody(text) {
+  const t = asTsv(text);
+  if (!t) return `<pre>${linkIds(esc(text))}</pre>`;
   const cell = (c, tag) => `<${tag}>${linkIds(esc(c))}</${tag}>`;
-  const head = "<tr>" + lines[0].split("\t").map(c => cell(c, "th")).join("") + "</tr>";
-  const body = rows.map(l => "<tr>" + l.split("\t").map(c => cell(c, "td")).join("") + "</tr>").join("");
+  const head = "<tr>" + t.head.map(c => cell(c, "th")).join("") + "</tr>";
+  const body = t.rows.map(l => "<tr>" + l.split("\t").map(c => cell(c, "td")).join("") + "</tr>").join("");
   return `<div class="wrap"><table>${head}${body}</table></div>` +
-         `<div class="rows">${esc(rest.length ? rest.join(" · ") : rows.length + " Zeile(n)")}</div>`;
+         `<div class="rows"><span>${esc(t.rest.length ? t.rest.join(" · ") : t.rows.length + " Zeile(n)")}</span></div>`;
 }
 
 function addTool(name, args) {
@@ -288,6 +571,7 @@ function addTool(name, args) {
   const rest = { ...(args || {}) };
   delete rest.query; delete rest.sparql;
   const arg = query ? Object.keys(rest).length ? JSON.stringify(rest) : "…" : JSON.stringify(args);
+  d.dataset.tool = name;
   d.innerHTML = `<summary>${query ? '<button class="copy" title="SPARQL kopieren">kopieren</button>' : ""}` +
                 `→ ${esc(name)}(${esc(arg).slice(0, 200)})</summary><div class="body"></div>`;
   if (query) {
@@ -301,9 +585,54 @@ function addTool(name, args) {
   $("log").scrollTop = $("log").scrollHeight;
   return d;
 }
+// Das Ergebnis zeigen und zum Speichern anbieten – im Original, nicht aus der angezeigten
+// Tabelle zurückgebaut. Aus einem TSV-Ergebnis wird dabei eine saubere Tabellendatei:
+// Kopfzeile und Datenzeilen, ohne Fußzeilen wie "(200 Zeilen, gekürzt)".
 function fillTool(d, text) {
   if (!d) return;
-  d.querySelector(".body").insertAdjacentHTML("beforeend", toolBody(text));
+  const body = d.querySelector(".body");
+  body.insertAdjacentHTML("beforeend", toolBody(text));
+  const t = asTsv(text), ext = t ? "tsv" : "txt";
+  const data = t ? [t.head.join("\t")].concat(t.rows).join("\n") : text;
+  let row = body.querySelector(".rows");
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "rows";
+    body.appendChild(row);
+  }
+  row.appendChild(dlButton(ext.toUpperCase() + " ↓", "Ergebnis als Datei speichern",
+    () => saveText(fileName(d.dataset.tool || "ergebnis", ext), data, ext)));
+}
+
+// Eine Frage samt ihren Anhängen. Die Chips laden die Datei wieder herunter: gleich nach
+// dem Absenden aus der Datei, die noch im Browser liegt, sonst vom Server (dort liegt sie
+// ganz, im Verlauf steht nur der Steckbrief).
+function attachmentUrl(id) {
+  return SHARED ? "/api/shared/attachment?token=" + encodeURIComponent(SHARED) + "&file=" + id
+                : "/api/attachment?session=" + encodeURIComponent(session) + "&file=" + id;
+}
+function addUser(text, files) {
+  const el = add("user", esc(text || ""));
+  if (!(files || []).length) return el;
+  const box = document.createElement("div");
+  box.className = "files";
+  for (const f of files) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.innerHTML = '<span class="n"></span><span class="s"></span>';
+    chip.querySelector(".n").textContent = f.name;
+    chip.querySelector(".s").textContent = fmtSize(f.size) + (f.part ? " · Anfang" : "");
+    chip.title = `${f.name} – ${f.lines || 0} Zeilen, ${f.chars || 0} Zeichen` +
+                 (f.columns ? `, ${f.columns.length} Spalten` : "") +
+                 (f.part ? " (nur der Anfang der Datei)" : "") + " · zum Speichern klicken";
+    chip.onclick = () => {
+      if (f.file) saveBlob(f.name, f.file);
+      else if (f.id) saveFrom(attachmentUrl(f.id), f.name);
+    };
+    box.appendChild(chip);
+  }
+  el.appendChild(box);
+  return el;
 }
 
 function showExamples() {
@@ -385,18 +714,25 @@ async function loadHistory() {
   try {
     hist = (await (await fetch("/api/history?session=" + encodeURIComponent(session))).json()).history || [];
   } catch (e) { /* leerer Verlauf */ }
+  renderMessages(hist);
+  showExamples();
+}
+
+// Nachrichten im neutralen Format in den Verlauf zeichnen – für das eigene Gespräch wie
+// für ein geteiltes; Tool-Ergebnisse gehören in den jeweils zuvor angelegten Tool-Kasten.
+function renderMessages(hist) {
   const pending = [];
   for (const m of hist) {
     if (m.role === "user") {
-      add("user", esc(m.content));
+      addUser(m.content, m.files);
     } else if (m.role === "assistant") {
+      // Text zuerst, dann die Tool-Aufrufe – so, wie es beim Streamen entstanden ist
+      if ((m.content || "").trim()) decorate(add("assistant", render(m.content)));
       for (const c of m.tool_calls || []) pending.push(addTool(c.name, c.args));
-      if ((m.content || "").trim()) add("assistant", render(m.content));
     } else if (m.role === "tool") {
       fillTool(pending.shift(), m.content);
     }
   }
-  showExamples();
 }
 
 // --- Seitenleiste: gespeicherte Gespräche --------------------------------
@@ -490,22 +826,159 @@ $("sidebtn").onclick = () => setSide(document.body.classList.contains("noside"),
 $("sidebg").onclick = () => setSide(false, false);
 window.addEventListener("resize", () => { if (narrow() && !document.body.classList.contains("noside")) setSide(false, false); });
 
+// --- Anhänge der nächsten Frage ------------------------------------------
+// Hochgeladen wird sofort beim Auswählen (/api/upload macht aus der Datei Text und gibt
+// eine ID zurück), abgeschickt erst mit der Frage. Ein Chip ohne ID ist noch unterwegs
+// oder abgelehnt – solange bleibt "Senden" gesperrt.
+const ATT = [];
+// Grenzen des Servers; /api/me trägt die echten nach. Wichtig, weil vor dem Chat ein nginx
+// mit client_max_body_size steht: eine zu große Datei bekäme von DEM eine HTML-Fehlerseite,
+// die hier als "Unexpected token '<'" ankäme. Deshalb wird zu Großes gar nicht erst geschickt.
+const UPLOAD = { max: 32 * 1024 * 1024, preview: 2000 };
+
+function fmtSize(n) {
+  n = Number(n) || 0;
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " kB" : n + " B";
+}
+
+function renderAttach() {
+  const box = $("attach");
+  box.innerHTML = "";
+  box.hidden = !ATT.length;
+  ATT.forEach((a, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (a.error ? " err" : "");
+    chip.innerHTML = '<span class="n"></span><span class="s"></span>' +
+                     '<button class="x" type="button" title="Anhang entfernen" aria-label="Anhang entfernen">×</button>';
+    chip.querySelector(".n").textContent = a.name;
+    chip.querySelector(".s").textContent = a.busy ? "lädt …" : a.error ? a.error
+      : a.id ? fmtSize(a.size) + (a.part ? " · Anfang" : "") : "wartet …";
+    chip.title = a.error || `${a.lines || 0} Zeilen, ${a.chars || 0} Zeichen` +
+                 (a.part ? " (nur der Anfang der Datei)" : "");
+    // Zu groß für uns oder für den Proxy davor: den Anfang der Datei nehmen.
+    if ((a.tooBig || a.status === 413) && !a.busy && !a.id) {
+      const head = document.createElement("button");
+      head.className = "part";
+      head.type = "button";
+      head.textContent = "Anfang nehmen";
+      head.title = "Nur den Anfang der Datei hochladen – der Rest bleibt außen vor";
+      head.onclick = () => uploadHead(a);
+      chip.insertBefore(head, chip.querySelector(".x"));
+    }
+    chip.querySelector(".x").onclick = () => { ATT.splice(i, 1); renderAttach(); };
+    box.appendChild(chip);
+  });
+  $("send").disabled = ATT.some(a => !a.id && !a.error);
+  $("attachnote").hidden = !ATT.some(a => a.part);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+// Antwort des Servers – oder, wenn etwas dazwischen HTML schickt (Proxy-Fehlerseite),
+// eine lesbare Meldung daraus.
+async function uploadAnswer(r) {
+  const body = await r.text();
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    if (r.status === 413) return { error: "Zu groß für den Server davor (nginx client_max_body_size)." };
+    return { error: `Fehler ${r.status}: ` + body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) };
+  }
+}
+
+async function postFile(a, blob, part) {
+  a.error = null;
+  a.status = 0;
+  a.busy = true;
+  renderAttach();
+  try {
+    const r = await fetch("/api/upload?name=" + encodeURIComponent(a.name) + (part ? "&part=1" : ""),
+                          { method: "POST", body: blob });
+    a.status = r.status;
+    const d = await uploadAnswer(r);
+    if (!r.ok) throw new Error(d.error || "Fehler " + r.status);
+    Object.assign(a, d);
+  } catch (e) {
+    a.error = String(e.message || e);
+  }
+  a.busy = false;
+  renderAttach();
+}
+
+// Anfang einer Datei bis zu `bytes`, abgeschnitten am letzten Zeilenumbruch davor: an einem
+// Zeilenumbruch zu trennen ist in jeder Kodierung gefahrlos (0x0A steckt in keinem Mehrbyte-
+// Zeichen), die letzte Zeile bleibt also ganz.
+async function headSlice(file, bytes) {
+  const buf = new Uint8Array(await file.slice(0, bytes).arrayBuffer());
+  const cut = buf.lastIndexOf(10);
+  return file.slice(0, cut > 0 ? cut + 1 : bytes);
+}
+// „Anfang nehmen“. Kommt ein 413, hat ein Proxy davor eine kleinere Grenze als der Chat –
+// dann mit einem Viertel noch einmal, statt den Fehler beim Benutzer abzuladen.
+async function uploadHead(a) {
+  let start = Math.min(UPLOAD.max, a.file.size);
+  if (a.status === 413) start = Math.floor(start / 4);   // in dieser Größe ist es schon gescheitert
+  for (let bytes = start; bytes >= 65536; bytes = Math.floor(bytes / 4)) {
+    await postFile(a, await headSlice(a.file, bytes), true);
+    if (a.id || a.status !== 413) return;
+  }
+}
+
+async function addFiles(list) {
+  for (const file of list) {
+    const a = { name: file.name, size: file.size, file };
+    ATT.push(a);
+    if (file.size > UPLOAD.max) {                  // gar nicht erst losschicken
+      a.tooBig = true;
+      a.error = `${fmtSize(file.size)} – höchstens ${fmtSize(UPLOAD.max)}`;
+      renderAttach();
+      continue;
+    }
+    await postFile(a, file, false);
+  }
+}
+
+$("attachbtn").onclick = () => $("filepick").click();
+$("filepick").onchange = ev => { addFiles(ev.target.files); ev.target.value = ""; };
+$("q").addEventListener("paste", ev => {
+  const files = [...(ev.clipboardData ? ev.clipboardData.files : [])];
+  if (files.length) { ev.preventDefault(); addFiles(files); }
+});
+// Datei ins Fenster ziehen. dragenter/dragleave feuern auch für Kindelemente, deshalb zählen.
+let dragDepth = 0;
+window.addEventListener("dragover", ev => ev.preventDefault());
+window.addEventListener("dragenter", ev => {
+  if (SHARED || !(ev.dataTransfer && [...ev.dataTransfer.types].includes("Files"))) return;
+  dragDepth++;
+  document.body.classList.add("drag");
+});
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) document.body.classList.remove("drag"); });
+window.addEventListener("drop", ev => {
+  ev.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove("drag");
+  if (!SHARED && ev.dataTransfer && ev.dataTransfer.files.length) addFiles(ev.dataTransfer.files);
+});
+
 function setBusy(on) {
   busy = on;
   document.querySelector(".inputrow").classList.toggle("busy", on);
   document.body.classList.toggle("working", on);
   $("send").hidden = on;
+  $("send").disabled = !on && ATT.some(a => !a.id && !a.error);
   $("stop").hidden = !on;
   if (!on) $("q").focus();
 }
 
 async function send() {
   const q = $("q").value.trim();
-  if (!q || busy) return;
+  const files = ATT.filter(a => a.id);                 // fertig hochgeladene Anhänge
+  if ((!q && !files.length) || busy) return;
   $("q").value = "";
   setBusy(true);
   document.querySelector(".msg.intro")?.remove();
-  add("user", esc(q));
+  addUser(q, files);
+  ATT.length = 0;
+  renderAttach();
   let answer = add("assistant cursor", ""), text = "", tool = null;
 
   controller = new AbortController();
@@ -513,7 +986,7 @@ async function send() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session, model: $("model").value, message: q }),
+      body: JSON.stringify({ session, model: $("model").value, message: q, files: files.map(a => a.id) }),
       signal: controller.signal,
     });
     const reader = resp.body.getReader();
@@ -539,11 +1012,12 @@ async function send() {
           answer = add("assistant cursor", "");       // Antwort geht nach den Tools weiter
           text = "";
         } else if (ev.type === "tool_result") {
-          fillTool(tool, ev.head);
+          fillTool(tool, ev.text);
         } else if (ev.type === "done") {
           answer.classList.remove("cursor");
           answer.innerHTML = render(text) +
             `<span class="stats">${ev.seconds} s · ${ev.calls} Tool-Aufrufe · ${esc(ev.model)}</span>`;
+          decorate(answer);
         } else if (ev.type === "error") {
           answer.classList.remove("cursor");
           add("error", esc(ev.message));
@@ -591,13 +1065,15 @@ async function doLogin() {
     if (!r.ok) { loginMsg(d.error || "Anmeldung fehlgeschlagen.", "err"); return; }
     $("loginpw").value = "";
     $("login").close();
+    if (SHARED) { await continueShared(); return; }   // Anmelden war der Weg zum Weiterführen
     await boot();
   } catch (e) { loginMsg("Server nicht erreichbar.", "err"); }
 }
 
 $("loginform").addEventListener("submit", e => { e.preventDefault(); doLogin(); });
-// Der Anmeldedialog darf nicht mit Escape weggeklickt werden.
-$("login").addEventListener("cancel", e => e.preventDefault());
+// Der Anmeldedialog darf nicht mit Escape weggeklickt werden – außer im geteilten
+// Gespräch, wo Lesen auch ohne Anmeldung geht.
+$("login").addEventListener("cancel", e => { if (!SHARED) e.preventDefault(); });
 
 $("logout").onclick = async () => {
   try { await fetch("/api/logout", { method: "POST" }); } catch (e) { /* egal */ }
@@ -653,16 +1129,111 @@ async function removeKey() {
 }
 
 $("keysbtn").onclick = openKeys;
+$("sharebtn").onclick = openShare;
+$("sharecopy").onclick = copyShare;
+$("shareclose").onclick = () => $("share").close();
+$("continuebtn").onclick = continueShared;
 $("keyclose").onclick = () => $("keys").close();
 $("keydel").onclick = removeKey;
 // Einziger submit-Knopf ist "Speichern", damit auch Enter im Feld speichert.
 $("keyform").addEventListener("submit", e => { e.preventDefault(); saveKey(); });
 
+// --- Permanenter Link ----------------------------------------------------
+function shareMsg(text, cls) {
+  const el = $("sharemsg");
+  el.className = "msg" + (cls ? " " + cls : "");
+  el.textContent = text;
+}
+
+// Der Link des laufenden Gesprächs; der Server legt das Token beim ersten Abruf an.
+async function openShare() {
+  shareMsg("Link wird geholt …", "");
+  $("shareurl").hidden = $("sharecopy").hidden = true;
+  $("share").showModal();
+  try {
+    const r = await fetch("/api/share?session=" + encodeURIComponent(session));
+    const d = await r.json();
+    if (!r.ok) { shareMsg(d.error || "Link nicht verfügbar.", "err"); return; }
+    $("shareurl").value = location.origin + d.path;
+    $("shareurl").hidden = $("sharecopy").hidden = false;
+    shareMsg("", "");
+    $("shareurl").focus();
+    $("shareurl").select();
+  } catch (e) { shareMsg("Server nicht erreichbar.", "err"); }
+}
+
+function copyShare() {
+  $("shareurl").select();
+  // Ohne HTTPS gibt es keine Clipboard-API – dann bleibt der markierte Link zum Kopieren.
+  (navigator.clipboard ? navigator.clipboard.writeText($("shareurl").value) : Promise.reject())
+    .then(() => shareMsg("Link kopiert.", "ok"),
+          () => shareMsg("Kopieren nicht möglich – der Link ist markiert.", ""));
+}
+
+// Ein geteiltes Gespräch als eigenes fortsetzen: der Server legt eine Kopie mit neuer
+// ID und eigenem Link an, die Oberfläche springt auf diese Kopie.
+async function continueShared() {
+  $("continuebtn").disabled = true;
+  try {
+    const r = await fetch("/api/shared/continue", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: SHARED })
+    });
+    if (r.status === 401) {                     // erst anmelden, dann weiter (siehe doLogin)
+      $("continuebtn").disabled = false;
+      $("loginform").querySelector(".hint").textContent =
+        "Zum Weiterführen dieses Gesprächs anmelden. Das geteilte Original bleibt unverändert – " +
+        "du bekommst eine eigene Kopie mit eigenem Link.";
+      $("login").showModal();
+      $("loginuser").focus();
+      return;
+    }
+    const d = await r.json();
+    if (!r.ok) { add("error", esc(d.error || "Weiterführen fehlgeschlagen.")); return; }
+    localStorage.setItem(SESSION_KEY, d.session);
+    location.href = "/";                        // dort öffnet die Kopie als eigenes Gespräch
+  } catch (e) {
+    $("continuebtn").disabled = false;
+    add("error", "Server nicht erreichbar.");
+  }
+}
+
+// Nur-Lese-Ansicht unter /s/<token>: kein Eingabefeld, keine Seitenleiste, keine Modellwahl.
+async function bootShared() {
+  document.body.classList.add("shared");
+  let me = {};
+  try { me = await (await fetch("/api/me")).json(); } catch (e) { /* ohne Anmeldung weiter */ }
+  if (me.user) { $("whoami").textContent = me.user; $("logout").hidden = false; }
+  $("continuebtn").textContent = me.auth && !me.user ? "Anmelden und weiterführen" : "Weiterführen";
+  let d;
+  try { d = await (await fetch("/api/shared?token=" + encodeURIComponent(SHARED))).json(); }
+  catch (e) { $("status").textContent = "Server nicht erreichbar"; return; }
+  if (d.error) {
+    $("status").textContent = "";
+    $("sharedfoot").hidden = true;
+    add("error", esc(d.error));
+    return;
+  }
+  $("status").textContent = "geteiltes Gespräch · nur Lesen";
+  if (d.title) document.title = d.title + " · FactGrid Chat";
+  // Nicht der Datenstand von heute, sondern wann das Gespräch geführt wurde – die
+  // Antworten stammen aus dem Spiegel von damals.
+  if (d.updated) {
+    const t = new Date(d.updated);
+    if (!isNaN(t)) $("stand").textContent = "Gespräch vom " +
+      t.toLocaleDateString("de-DE", { day: "numeric", month: "long", year: "numeric" });
+  }
+  renderMessages(d.messages || []);
+}
+
 // --- Start ---------------------------------------------------------------
 async function boot() {
+  if (SHARED) return bootShared();
   let me;
   try { me = await (await fetch("/api/me")).json(); }
   catch (e) { $("status").textContent = "Server nicht erreichbar"; return; }
+  if (me.upload_max) UPLOAD.max = me.upload_max;          // Grenzen für Anhänge vom Server
+  if (me.upload_preview) UPLOAD.preview = me.upload_preview;
 
   if (me.auth && !me.user) {          // Anmeldung noetig
     $("login").showModal();
