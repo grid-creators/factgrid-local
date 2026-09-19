@@ -2,7 +2,9 @@
 # Web-Chat als Dienst. Bindet laut .env an 0.0.0.0:8177; von aussen erreichbar
 # ist der Port trotzdem nicht - ufw laesst nur 172.20.0.0/16 (das Netz des
 # nginx-proxy-manager) durch. Oeffentlich geht es nur ueber
-# https://factgrid-ai.grid-creators.com mit Basic Auth.
+# https://factgrid-ai.grid-creators.com, dort meldet man sich mit seinem
+# FactGrid-Konto an (OAuth, FACTGRID_OAUTH_KEY/_SECRET in .env). Ohne die beiden
+# startet der Dienst hier gar nicht erst - offen und oeffentlich waere er sonst.
 [Unit]
 Description=FactGrid lokal - Web-Chat (FastAPI, Port 8177)
 After=network-online.target docker.service

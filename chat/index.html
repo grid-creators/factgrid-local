@@ -198,27 +198,6 @@
   .keylist button { font-size: 12px; padding: 2px 8px; }
   dialog.modal .linkrow { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
   dialog.modal .linkrow input { flex: 1; min-width: 0; font-size: 13px; }
-  /* Anhänge: Chips über dem Eingabefeld und in der eigenen Frage */
-  #attach { display: flex; flex-wrap: wrap; gap: 6px; max-width: 860px; margin: 0 auto 8px; }
-  .chip {
-    display: inline-flex; align-items: center; gap: 6px; max-width: 320px;
-    border: 1px solid var(--border); border-radius: 999px; background: var(--bg);
-    padding: 3px 4px 3px 11px; font-size: 12.5px;
-  }
-  .chip .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chip .s { color: var(--muted); white-space: nowrap; }
-  .chip.err { border-color: var(--err); }
-  .chip.err .s { color: var(--err); white-space: normal; }
-  .chip .x { border: none; background: none; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 5px; }
-  .chip .x:hover { color: var(--err); }
-  .msg .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .msg .files .chip { background: var(--panel); cursor: pointer; padding: 3px 11px; }
-  .msg .files .chip:hover { border-color: var(--accent); }
-  #attachbtn { font-size: 15px; padding: 6px 9px; }
-  .chip .part { border: none; background: none; color: var(--accent); font-size: 12px; padding: 0 4px; }
-  #attachnote { max-width: 860px; margin: -4px auto 8px; color: var(--muted); font-size: 12px; }
-  body.drag footer { outline: 2px dashed var(--accent); outline-offset: -6px; }
-  body.shared #attach, body.shared #attachbtn { display: none; }
   /* Download-Knopf an Tabellen, Datei-Codeblöcken und Tool-Ergebnissen */
   .dlbar { display: flex; justify-content: flex-end; margin: 0 0 4px; }
   button.dl {
@@ -244,15 +223,13 @@
 <dialog id="login" class="modal">
   <form class="body" id="loginform">
     <h2>Anmelden</h2>
-    <p class="hint">Der FactGrid-Chat ist nur für angemeldete Personen zugänglich.
-      Jede Anmeldung hat ein eigenes Profil mit eigenem API-Schlüssel.</p>
-    <label for="loginuser">Benutzer</label>
-    <input type="text" id="loginuser" autocomplete="username" spellcheck="false">
-    <label for="loginpw">Passwort</label>
-    <input type="password" id="loginpw" autocomplete="current-password">
+    <p class="hint">Der FactGrid-Chat ist nur für angemeldete Personen zugänglich. Die Anmeldung
+      läuft über dein <span id="loginwiki">FactGrid</span>-Konto – der Chat sieht davon nur deinen
+      Benutzernamen und bekommt keine Rechte, in FactGrid zu schreiben. Jedes Konto hat hier ein
+      eigenes Profil mit eigenem API-Schlüssel.</p>
     <div class="msg" id="loginmsg"></div>
     <div class="actions">
-      <button id="loginbtn">Anmelden</button>
+      <button id="loginbtn">Mit FactGrid anmelden</button>
     </div>
   </form>
 </dialog>
@@ -301,13 +278,7 @@
   <div id="col">
     <div id="log"><div class="inner" id="loginner"></div></div>
     <footer>
-      <div id="attach" hidden></div>
-      <div id="attachnote" hidden>Von dieser Datei liegt nur der Anfang auf dem Server – was
-        danach kommt, kennt der Chat nicht.</div>
       <div class="inputrow">
-        <input type="file" id="filepick" multiple hidden>
-        <button id="attachbtn" title="Datei anhängen (auch per Ziehen oder Einfügen)"
-                aria-label="Datei anhängen">&#128206;</button>
         <textarea id="q" placeholder="Frage an FactGrid … (Enter sendet, Shift+Enter = Zeilenumbruch)"></textarea>
         <button id="send">Senden</button>
         <button id="stop" hidden title="Laufende Antwort abbrechen">Stopp</button>
@@ -363,16 +334,6 @@ function fileName(kind, ext) {
 function saveText(name, text, ext) {
   const bom = ext === "tsv" || ext === "csv" ? "﻿" : "";
   saveBlob(name, new Blob([bom + text], { type: "text/plain;charset=utf-8" }));
-}
-// Datei vom Server speichern: der Content-Disposition-Header macht daraus einen Download,
-// der Link bleibt auf der Seite.
-function saveFrom(url, name) {
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 }
 function saveBlob(name, blob) {
   const a = document.createElement("a");
@@ -604,35 +565,8 @@ function fillTool(d, text) {
     () => saveText(fileName(d.dataset.tool || "ergebnis", ext), data, ext)));
 }
 
-// Eine Frage samt ihren Anhängen. Die Chips laden die Datei wieder herunter: gleich nach
-// dem Absenden aus der Datei, die noch im Browser liegt, sonst vom Server (dort liegt sie
-// ganz, im Verlauf steht nur der Steckbrief).
-function attachmentUrl(id) {
-  return SHARED ? "/api/shared/attachment?token=" + encodeURIComponent(SHARED) + "&file=" + id
-                : "/api/attachment?session=" + encodeURIComponent(session) + "&file=" + id;
-}
-function addUser(text, files) {
-  const el = add("user", esc(text || ""));
-  if (!(files || []).length) return el;
-  const box = document.createElement("div");
-  box.className = "files";
-  for (const f of files) {
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.innerHTML = '<span class="n"></span><span class="s"></span>';
-    chip.querySelector(".n").textContent = f.name;
-    chip.querySelector(".s").textContent = fmtSize(f.size) + (f.part ? " · Anfang" : "");
-    chip.title = `${f.name} – ${f.lines || 0} Zeilen, ${f.chars || 0} Zeichen` +
-                 (f.columns ? `, ${f.columns.length} Spalten` : "") +
-                 (f.part ? " (nur der Anfang der Datei)" : "") + " · zum Speichern klicken";
-    chip.onclick = () => {
-      if (f.file) saveBlob(f.name, f.file);
-      else if (f.id) saveFrom(attachmentUrl(f.id), f.name);
-    };
-    box.appendChild(chip);
-  }
-  el.appendChild(box);
-  return el;
+function addUser(text) {
+  return add("user", esc(text || ""));
 }
 
 function showExamples() {
@@ -724,7 +658,7 @@ function renderMessages(hist) {
   const pending = [];
   for (const m of hist) {
     if (m.role === "user") {
-      addUser(m.content, m.files);
+      addUser(m.content);
     } else if (m.role === "assistant") {
       // Text zuerst, dann die Tool-Aufrufe – so, wie es beim Streamen entstanden ist
       if ((m.content || "").trim()) decorate(add("assistant", render(m.content)));
@@ -826,159 +760,22 @@ $("sidebtn").onclick = () => setSide(document.body.classList.contains("noside"),
 $("sidebg").onclick = () => setSide(false, false);
 window.addEventListener("resize", () => { if (narrow() && !document.body.classList.contains("noside")) setSide(false, false); });
 
-// --- Anhänge der nächsten Frage ------------------------------------------
-// Hochgeladen wird sofort beim Auswählen (/api/upload macht aus der Datei Text und gibt
-// eine ID zurück), abgeschickt erst mit der Frage. Ein Chip ohne ID ist noch unterwegs
-// oder abgelehnt – solange bleibt "Senden" gesperrt.
-const ATT = [];
-// Grenzen des Servers; /api/me trägt die echten nach. Wichtig, weil vor dem Chat ein nginx
-// mit client_max_body_size steht: eine zu große Datei bekäme von DEM eine HTML-Fehlerseite,
-// die hier als "Unexpected token '<'" ankäme. Deshalb wird zu Großes gar nicht erst geschickt.
-const UPLOAD = { max: 32 * 1024 * 1024, preview: 2000 };
-
-function fmtSize(n) {
-  n = Number(n) || 0;
-  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " kB" : n + " B";
-}
-
-function renderAttach() {
-  const box = $("attach");
-  box.innerHTML = "";
-  box.hidden = !ATT.length;
-  ATT.forEach((a, i) => {
-    const chip = document.createElement("span");
-    chip.className = "chip" + (a.error ? " err" : "");
-    chip.innerHTML = '<span class="n"></span><span class="s"></span>' +
-                     '<button class="x" type="button" title="Anhang entfernen" aria-label="Anhang entfernen">×</button>';
-    chip.querySelector(".n").textContent = a.name;
-    chip.querySelector(".s").textContent = a.busy ? "lädt …" : a.error ? a.error
-      : a.id ? fmtSize(a.size) + (a.part ? " · Anfang" : "") : "wartet …";
-    chip.title = a.error || `${a.lines || 0} Zeilen, ${a.chars || 0} Zeichen` +
-                 (a.part ? " (nur der Anfang der Datei)" : "");
-    // Zu groß für uns oder für den Proxy davor: den Anfang der Datei nehmen.
-    if ((a.tooBig || a.status === 413) && !a.busy && !a.id) {
-      const head = document.createElement("button");
-      head.className = "part";
-      head.type = "button";
-      head.textContent = "Anfang nehmen";
-      head.title = "Nur den Anfang der Datei hochladen – der Rest bleibt außen vor";
-      head.onclick = () => uploadHead(a);
-      chip.insertBefore(head, chip.querySelector(".x"));
-    }
-    chip.querySelector(".x").onclick = () => { ATT.splice(i, 1); renderAttach(); };
-    box.appendChild(chip);
-  });
-  $("send").disabled = ATT.some(a => !a.id && !a.error);
-  $("attachnote").hidden = !ATT.some(a => a.part);
-  $("log").scrollTop = $("log").scrollHeight;
-}
-
-// Antwort des Servers – oder, wenn etwas dazwischen HTML schickt (Proxy-Fehlerseite),
-// eine lesbare Meldung daraus.
-async function uploadAnswer(r) {
-  const body = await r.text();
-  try {
-    return JSON.parse(body);
-  } catch (e) {
-    if (r.status === 413) return { error: "Zu groß für den Server davor (nginx client_max_body_size)." };
-    return { error: `Fehler ${r.status}: ` + body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) };
-  }
-}
-
-async function postFile(a, blob, part) {
-  a.error = null;
-  a.status = 0;
-  a.busy = true;
-  renderAttach();
-  try {
-    const r = await fetch("/api/upload?name=" + encodeURIComponent(a.name) + (part ? "&part=1" : ""),
-                          { method: "POST", body: blob });
-    a.status = r.status;
-    const d = await uploadAnswer(r);
-    if (!r.ok) throw new Error(d.error || "Fehler " + r.status);
-    Object.assign(a, d);
-  } catch (e) {
-    a.error = String(e.message || e);
-  }
-  a.busy = false;
-  renderAttach();
-}
-
-// Anfang einer Datei bis zu `bytes`, abgeschnitten am letzten Zeilenumbruch davor: an einem
-// Zeilenumbruch zu trennen ist in jeder Kodierung gefahrlos (0x0A steckt in keinem Mehrbyte-
-// Zeichen), die letzte Zeile bleibt also ganz.
-async function headSlice(file, bytes) {
-  const buf = new Uint8Array(await file.slice(0, bytes).arrayBuffer());
-  const cut = buf.lastIndexOf(10);
-  return file.slice(0, cut > 0 ? cut + 1 : bytes);
-}
-// „Anfang nehmen“. Kommt ein 413, hat ein Proxy davor eine kleinere Grenze als der Chat –
-// dann mit einem Viertel noch einmal, statt den Fehler beim Benutzer abzuladen.
-async function uploadHead(a) {
-  let start = Math.min(UPLOAD.max, a.file.size);
-  if (a.status === 413) start = Math.floor(start / 4);   // in dieser Größe ist es schon gescheitert
-  for (let bytes = start; bytes >= 65536; bytes = Math.floor(bytes / 4)) {
-    await postFile(a, await headSlice(a.file, bytes), true);
-    if (a.id || a.status !== 413) return;
-  }
-}
-
-async function addFiles(list) {
-  for (const file of list) {
-    const a = { name: file.name, size: file.size, file };
-    ATT.push(a);
-    if (file.size > UPLOAD.max) {                  // gar nicht erst losschicken
-      a.tooBig = true;
-      a.error = `${fmtSize(file.size)} – höchstens ${fmtSize(UPLOAD.max)}`;
-      renderAttach();
-      continue;
-    }
-    await postFile(a, file, false);
-  }
-}
-
-$("attachbtn").onclick = () => $("filepick").click();
-$("filepick").onchange = ev => { addFiles(ev.target.files); ev.target.value = ""; };
-$("q").addEventListener("paste", ev => {
-  const files = [...(ev.clipboardData ? ev.clipboardData.files : [])];
-  if (files.length) { ev.preventDefault(); addFiles(files); }
-});
-// Datei ins Fenster ziehen. dragenter/dragleave feuern auch für Kindelemente, deshalb zählen.
-let dragDepth = 0;
-window.addEventListener("dragover", ev => ev.preventDefault());
-window.addEventListener("dragenter", ev => {
-  if (SHARED || !(ev.dataTransfer && [...ev.dataTransfer.types].includes("Files"))) return;
-  dragDepth++;
-  document.body.classList.add("drag");
-});
-window.addEventListener("dragleave", () => { if (--dragDepth <= 0) document.body.classList.remove("drag"); });
-window.addEventListener("drop", ev => {
-  ev.preventDefault();
-  dragDepth = 0;
-  document.body.classList.remove("drag");
-  if (!SHARED && ev.dataTransfer && ev.dataTransfer.files.length) addFiles(ev.dataTransfer.files);
-});
-
 function setBusy(on) {
   busy = on;
   document.querySelector(".inputrow").classList.toggle("busy", on);
   document.body.classList.toggle("working", on);
   $("send").hidden = on;
-  $("send").disabled = !on && ATT.some(a => !a.id && !a.error);
   $("stop").hidden = !on;
   if (!on) $("q").focus();
 }
 
 async function send() {
   const q = $("q").value.trim();
-  const files = ATT.filter(a => a.id);                 // fertig hochgeladene Anhänge
-  if ((!q && !files.length) || busy) return;
+  if (!q || busy) return;
   $("q").value = "";
   setBusy(true);
   document.querySelector(".msg.intro")?.remove();
-  addUser(q, files);
-  ATT.length = 0;
-  renderAttach();
+  addUser(q);
   let answer = add("assistant cursor", ""), text = "", tool = null;
 
   controller = new AbortController();
@@ -986,7 +783,7 @@ async function send() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session, model: $("model").value, message: q, files: files.map(a => a.id) }),
+      body: JSON.stringify({ session, model: $("model").value, message: q }),
       signal: controller.signal,
     });
     const reader = resp.body.getReader();
@@ -1052,22 +849,22 @@ function loginMsg(text, cls) {
   el.textContent = text;
 }
 
-async function doLogin() {
-  const user = $("loginuser").value.trim(), password = $("loginpw").value;
-  if (!user || !password) { loginMsg("Benutzer und Passwort angeben.", "err"); return; }
-  loginMsg("Prüfe …", "");
-  try {
-    const r = await fetch("/api/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user, password })
-    });
-    const d = await r.json();
-    if (!r.ok) { loginMsg(d.error || "Anmeldung fehlgeschlagen.", "err"); return; }
-    $("loginpw").value = "";
-    $("login").close();
-    if (SHARED) { await continueShared(); return; }   // Anmelden war der Weg zum Weiterführen
-    await boot();
-  } catch (e) { loginMsg("Server nicht erreichbar.", "err"); }
+// Die Anmeldung verlässt die Seite: /api/oauth/login schickt den Browser zu FactGrid,
+// von dort kommt er über /api/oauth/callback mit gesetztem Sitzungscookie zurück – im
+// geteilten Gespräch mit ?weiter=1, damit das Weiterführen dort von selbst losgeht.
+function doLogin() {
+  loginMsg("Weiter zu FactGrid …", "");
+  const back = SHARED ? location.pathname + "?weiter=1" : "/";
+  location.href = "/api/oauth/login?next=" + encodeURIComponent(back);
+}
+
+// Eine gescheiterte Anmeldung kommt als /?fehler=… zurück (der Weg führt über FactGrid,
+// da gibt es keine Antwort zum Auslesen). Die Meldung zeigt der Dialog, die Adresse wird
+// wieder sauber.
+function loginError() {
+  const msg = new URLSearchParams(location.search).get("fehler");
+  if (msg) history.replaceState(null, "", location.pathname);
+  return msg || "";
 }
 
 $("loginform").addEventListener("submit", e => { e.preventDefault(); doLogin(); });
@@ -1185,7 +982,7 @@ async function continueShared() {
         "Zum Weiterführen dieses Gesprächs anmelden. Das geteilte Original bleibt unverändert – " +
         "du bekommst eine eigene Kopie mit eigenem Link.";
       $("login").showModal();
-      $("loginuser").focus();
+      $("loginbtn").focus();
       return;
     }
     const d = await r.json();
@@ -1204,7 +1001,15 @@ async function bootShared() {
   let me = {};
   try { me = await (await fetch("/api/me")).json(); } catch (e) { /* ohne Anmeldung weiter */ }
   if (me.user) { $("whoami").textContent = me.user; $("logout").hidden = false; }
+  if (me.wiki) $("loginwiki").textContent = me.wiki;
   $("continuebtn").textContent = me.auth && !me.user ? "Anmelden und weiterführen" : "Weiterführen";
+  const fehler = loginError();
+  if (fehler) { loginMsg(fehler, "err"); $("login").showModal(); }
+  // Nach der Anmeldung (?weiter=1) das Weiterführen von selbst anstoßen.
+  else if (me.user && new URLSearchParams(location.search).get("weiter")) {
+    history.replaceState(null, "", location.pathname);
+    continueShared();
+  }
   let d;
   try { d = await (await fetch("/api/shared?token=" + encodeURIComponent(SHARED))).json(); }
   catch (e) { $("status").textContent = "Server nicht erreichbar"; return; }
@@ -1232,12 +1037,12 @@ async function boot() {
   let me;
   try { me = await (await fetch("/api/me")).json(); }
   catch (e) { $("status").textContent = "Server nicht erreichbar"; return; }
-  if (me.upload_max) UPLOAD.max = me.upload_max;          // Grenzen für Anhänge vom Server
-  if (me.upload_preview) UPLOAD.preview = me.upload_preview;
-
   if (me.auth && !me.user) {          // Anmeldung noetig
+    if (me.wiki) $("loginwiki").textContent = me.wiki;
+    const fehler = loginError();
+    if (fehler) loginMsg(fehler, "err");
     $("login").showModal();
-    $("loginuser").focus();
+    $("loginbtn").focus();
     return;
   }
   if (me.user) {

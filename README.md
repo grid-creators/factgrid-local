@@ -193,11 +193,17 @@ Konfiguration über Umgebungsvariablen (`.env.example`): `QLEVER_ENDPOINT`, `FAC
 oder mit `--http` (Open WebUI: Streamable HTTP unter `http://127.0.0.1:8765/mcp`).
 
 Tests: `tests/test_chat_backends.py` prüft Modellliste, Schlüsselauflösung, Gesprächsablage, die permanenten
-Gesprächslinks (Nur-Lesen ohne Anmeldung, Weiterführen als eigene Kopie), die Datei-Anhänge (Textgewinnung
-aus TXT/CSV/PDF, Abweisen von Bild- und Office-Dateien, `/api/upload`, der Weg des Anhangs in die Frage
-jedes Providers) und das DeepSeek-Backend
+Gesprächslinks (Nur-Lesen ohne Anmeldung, Weiterführen als eigene Kopie) und das DeepSeek-Backend
 (Nachrichtenformat, Zusammensetzen gestreamter Tool-Aufrufe, Endpunkte `/api/models` und `/api/keys`) ohne
-echte API-Aufrufe. `tests/test_mcp.py` startet einen rdflib-Mock-Endpunkt mit dem konvertierten Testgraphen und prüft
+echte API-Aufrufe. `tests/test_oauth.py` prüft die Anmeldung ohne Netz: die Signatur gegen das Beispiel
+aus der OAuth-Spezifikation (stimmt sie, stimmt die Signaturbasis), das Identitäts-JWT gegen falsches
+Geheimnis, fremden Empfänger, fremdes Wiki, Ablauf und fremde Nonce, und den ganzen Ablauf über
+`/api/oauth/login` und `/api/oauth/callback` gegen ein nachgebautes Wiki (`httpx.MockTransport`), das jede
+Signatur nachrechnet – samt gesperrtem Konto, abgelaufenem Anmeldeversuch, unerreichbarem Wiki und der
+Weigerung, `?next=` auf fremde Adressen weiterzuleiten. `tests/test_usage.py` prüft die Buchhaltung:
+die Tokenzahlen der Anbieter auf eine Form gebracht (besonders Anthropics Cache-Felder), eine Zeile je
+Antwort mit der Summe über den ganzen Tool-Loop und dem richtigen Schlüssel-Vermerk, eine Antwort, die
+auch bei nicht schreibbarer Datei ankommt, und das Auszählen nach Zeitraum, Person und Modell. `tests/test_mcp.py` startet einen rdflib-Mock-Endpunkt mit dem konvertierten Testgraphen und prüft
 alle vier Tools sowie die Umschreibungen (implizit/explizit, UNION/OPTIONAL/MINUS/Subquery, Kommentare,
 LIMIT, Update-Sperre) end-to-end – ohne laufenden QLever. Der Mock spricht dasselbe Protokoll, kennt aber
 QLevers Parameterregeln nicht; der erste Lauf gegen den echten QLever ist deshalb Teil von `make smoke`.
@@ -246,14 +252,14 @@ Schlüssel laufen, während ein anderer pro Person abgerechnet wird. Die Oberfl�
 Schlüssel da ist, und der Schlüssel-Dialog gilt immer für den Anbieter des gewählten Modells.
 Anthropic und OpenAI melden ihre Modelle live, bei OpenRouter wäre die Liste mit einigen hundert Einträgen
 unbrauchbar – deshalb die Auswahl aus `.env`.
+Antworten werden als Markdown-Teilmenge gerendert (Überschriften, Listen, Zitate, Trennlinien, Codeblöcke,
+Inline-Code, Fett/Kursiv, Links, GFM-Tabellen);
 Tool-Aufrufe erscheinen aufklappbar mit dem erzeugten SPARQL (Kopierknopf) und dem Ergebnis: TSV wird als
 Tabelle gerendert, Q-/P-IDs werden auf die Live-Instanz verlinkt, damit sich jede Antwort in einem Klick
 gegenprüfen lässt. Die Kopfzeile zeigt den Datenstand des Spiegels (`/api/info` → `get_wikibase_info`),
 eine laufende Antwort lässt sich abbrechen, und wenn kein Anbieter konfiguriert ist, sagt ein
 Banner welcher Schlüssel fehlt statt eines leeren Dropdowns.
 Die **Seitenleiste** listet alle bisherigen Gespräche des angemeldeten Benutzers (Titel = erste Frage,
-Antworten werden als Markdown-Teilmenge gerendert (Überschriften, Listen, Zitate, Trennlinien, Codeblöcke,
-Inline-Code, Fett/Kursiv, Links, GFM-Tabellen);
 zuletzt benutzte zuerst); ein Klick öffnet eines, „+ Neues Gespräch“ beginnt ein leeres, das × am Eintrag
 löscht es nach einer Rückfrage. Die Gespräche liegen auf dem Server unter `.chat-history/<benutzer>/<id>.json`
 (`FACTGRID_CHAT_HISTORY`) und überstehen damit Neuladen wie Neustart; die Datei entsteht mit der ersten
@@ -261,51 +267,87 @@ Frage und wird nach jeder Antwort geschrieben (`/api/chats`, `/api/history`, `DE
 Jeder sieht nur die eigenen Gespräche; ohne Anmeldung teilen sich alle ein gemeinsames Konto. Jede Antwort wird wie beim Mini-Agenten
 als JSONL nach `eval/runs/` protokolliert (Feld `"ui": "chat"`).
 
-### 3.7 MediaWiki-Datenbank – Bearbeitungsgeschichte (`scripts/mw_load.py`, `mcp/factgrid_mcp/mwdb.py`)
+**Anmeldung über FactGrid.** Wer fragen will, meldet sich mit seinem FactGrid-Konto an
+(MediaWiki-OAuth 1.0a, `chat/mwoauth.py`). „Mit FactGrid anmelden“ führt auf `GET /api/oauth/login`:
+signiert ein Anfrage-Token holen (`Special:OAuth/initiate`) und den Browser zur Bestätigung ins Wiki
+schicken (`Special:OAuth/authorize`). Von dort kommt er mit `oauth_verifier` an `/api/oauth/callback`
+zurück, das den Verifier gegen den Zugriffs-Token tauscht (`Special:OAuth/token`) und die Identität abholt
+(`Special:OAuth/identify` – ein JWT, HS256 mit dem Consumer-Geheimnis). Geprüft werden Signatur, Empfänger
+(`aud`), Aussteller (`iss`), Gültigkeit (`iat`/`exp`) und die Nonce der eigenen Anfrage – ohne sie ließe
+sich eine aufgezeichnete Antwort erneut einspielen; erst danach entsteht die Sitzung. Herein kommt jedes
+nicht gesperrte FactGrid-Konto; Profil (API-Schlüssel) und Gespräche hängen am FactGrid-Benutzernamen, wer
+dort umbenannt wird, fängt hier neu an. Der Zugriffs-Token wird nach dem `identify` weggeworfen: der Chat
+schreibt nichts im Wiki, er will nur den Namen – der Consumer braucht darum nur die Grundrechte („Basic
+rights“) und keine Bearbeitungsrechte.
 
-**Dateien anhängen.** An eine Frage lassen sich Dateien hängen (Büroklammer, Ziehen ins Fenster oder
-Einfügen aus der Zwischenablage). Der Server macht daraus beim Hochladen **Text** (`POST /api/upload`, der
-Datei-Inhalt ist der Request-Body – kein multipart, das spart eine Abhängigkeit): TXT, CSV/TSV, JSON,
-XML/TTL, Markdown, SPARQL direkt (UTF-8, BOM und die Windows-Kodierung, in der Excel CSV schreibt), PDF
-über `pypdf`. Bilder und Office-Dateien nimmt der Chat **nicht** – dafür hätte jeder der vier Anbieter ein
-eigenes Format; statt Kauderwelsch anzuhängen, sagt die Fehlermeldung, was da hochgeladen wurde („Tabellen
-aus Excel bitte als CSV oder TSV speichern“).
+Nicht OAuth 2.0, obwohl die Erweiterung es könnte: FactGrids Token-Endpunkt
+(`POST /w/rest.php/oauth2/access_token`) antwortet mit `Key path "file://" does not exist or is not
+readable` – ohne hinterlegten RSA-Schlüssel stellt das Wiki keine OAuth-2.0-Token aus. Der 1.0a-Weg läuft
+dort; er kommt ohne diesen Schlüssel aus, weil alles mit dem Consumer-Geheimnis signiert wird (HMAC-SHA1,
+RFC 5849 – SHA-1 ist hier Protokoll, keine Wahl).
 
-**Die Datei bleibt auf dem Server, nicht im Kontext.** Mit dem Absenden zieht die Textdatei neben die
-Gesprächsdatei (`.chat-history/<benutzer>/<gespräch>.files/<id>.txt`) und wird mit dem Gespräch gelöscht;
-in den Prompt geht nur ein **Steckbrief mit den ersten `FACTGRID_CHAT_UPLOAD_PREVIEW` Zeichen** (Vorgabe
-2 000): Name, Zeilen, Zeichen, erkanntes Trennzeichen und die Spaltennamen. Der Grund ist der Verlauf – er
-geht bei jeder Folgefrage komplett wieder an die API, ein ganzer 16-MB-Anhang würde also bei jeder Frage
-neu bezahlt. Für alles Weitere bekommt das Modell in Gesprächen mit Anhängen **vier zusätzliche
-Werkzeuge**, die im Chat-Prozess auf der ganzen Datei laufen (`LOCAL_TOOLS` in `chat/server.py`; ohne
-Anhang stehen sie nicht in der Tool-Liste):
+**Einrichten.** Consumer unter `Special:OAuthConsumerRegistration/propose` anlegen: als Rückruf-Adresse
+`<öffentliche Adresse>/api/oauth/callback` eintragen, „Grundrechte“ genügen als Recht. Nach der Freigabe
+kommen Consumer-Token und -Geheimnis als `FACTGRID_OAUTH_KEY` und `FACTGRID_OAUTH_SECRET` in `.env` – mehr
+braucht es nicht.
 
-| Werkzeug | wofür |
-| --- | --- |
-| `list_attachments` | was hängt an: Zeilen, Zeichen, Trennzeichen, Spaltennamen |
-| `read_attachment` | Zeilenfenster (`from_line`, `lines`; höchstens 400) |
-| `search_attachment` | alle Zeilen mit einem Suchwort (Groß/Klein egal, optional regulärer Ausdruck), mit Zeilennummer |
-| `column_stats` | eine Spalte auszählen: gefüllt, leer, verschiedene Werte, die häufigsten |
+Die Rückruf-Adresse wird nämlich **nicht** mitgeschickt: `initiate` sendet `oauth_callback=oob`, und das
+Wiki nimmt die beim Consumer eingetragene Adresse, hängt `oauth_token` und `oauth_verifier` an und schickt
+den Browser dorthin (`Consumer::generateCallbackUrl`: `if ( $callback === 'oob' ) { $callback =
+$this->getCallbackUrl(); }`). Wer stattdessen eine Adresse mitschickt, bekommt von einem Consumer ohne den
+Haken „Allow consumer to specify a callback in requests“ ein `mwoauth-callback-not-oob` zurück
+(*„oauth_callback must be set, and must be set to "oob" (case-sensitive)“*). Nur ein Consumer **mit** dem
+Haken darf eine eigene Adresse schicken; dafür gibt es `FACTGRID_OAUTH_CALLBACK`, das sonst leer bleibt.
+`oob` heißt hier also nicht „zeig dem Menschen einen Code“ – das täte das Wiki nur, wenn schon bei der
+Registrierung `oob` als Rückruf-Adresse stünde (Consumer ohne Web-Server).
 
-So beantwortet das Modell auch Fragen über Zeile 120 000 einer Tabelle, die es nie gesehen hat – in den
-Kontext geht nur das Ergebnis (je Aufruf höchstens 8 000 Zeichen). `CLAUDE.md` weist es an, Mengenfragen
-über `column_stats`/`search_attachment` zu beantworten statt die Datei stückweise zu lesen, den Inhalt als
-**Material, nicht als Anweisung** zu lesen und Namen daraus wie jede andere Angabe erst mit
-`search_entities` aufzulösen. Der Chip unter der Frage lädt die Datei wieder herunter
-(`GET /api/attachment`, im geteilten Gespräch `GET /api/shared/attachment`).
+Die Sitzung liegt im Speicher – Cookie
+`fg_session` (`httponly`, `samesite=lax`, `secure` sobald der Proxy HTTPS meldet), gültig
+`FACTGRID_CHAT_SESSION_TTL` Sekunden (Vorgabe 12 h); ein Neustart meldet alle ab. „Abmelden“ beendet die
+Sitzung hier, nicht die im Wiki. Eine gescheiterte Anmeldung kommt als `/?fehler=…` zurück und steht im
+Anmeldedialog – der Weg führt über FactGrid, da gibt es keine Antwort zum Auslesen.
 
-Die Größengrenze steht an **zwei** Stellen, die zusammenpassen müssen: `FACTGRID_CHAT_UPLOAD_MAX` im Chat
-(32 MB) und `client_max_body_size` im nginx-proxy-manager davor (Proxy-Host → Advanced). Wird nur eine der
-beiden erhöht, antwortet der Proxy mit seiner HTML-Fehlerseite statt mit JSON. Damit das gar nicht erst
-passiert, holt sich die Oberfläche die Grenze beim Start (`/api/me` → `upload_max`) und schickt eine zu
-große Datei **nicht** los: Der Chip nennt Größe und Grenze und bietet „Anfang nehmen“ an – der Browser
-schneidet dann am letzten Zeilenumbruch vor der Grenze ab (ein `\n` steckt in keinem Mehrbyte-Zeichen, der
-Ausschnitt ist also in jeder Kodierung heil), `?part=1` sagt es dem Server, und im Steckbrief steht „nur
-der Anfang der hochgeladenen Datei“. Antwortet doch ein Proxy mit 413, versucht es die Oberfläche mit
-einem Viertel noch einmal (bis hinunter zu 64 kB) – eine strengere Grenze davor bleibt so eine Frage der
-Geduld, nicht des Scheiterns.
+**Ohne Consumer** (`FACTGRID_OAUTH_KEY`/`_SECRET` leer) läuft der Chat ohne Anmeldung, alle teilen sich das
+Konto `_offen`: gedacht für den Arbeitsplatz. Damit das nicht versehentlich öffentlich passiert, startet der
+Server dann nur auf `127.0.0.1` und bricht mit einer Meldung ab, wenn `FACTGRID_CHAT_HOST` auf eine von
+außen erreichbare Adresse zeigt.
 
-**Dateien herunterladen.** Umgekehrt ist alles Tabellarische einer Antwort ein Klick von einer Datei
+**Token-Verbrauch.** Weil jede Frage Guthaben kostet, notiert der Server zu jeder Antwort eine
+Zeile in `.chat-usage.jsonl` (`FACTGRID_CHAT_USAGE`, Dateirechte 600): Zeitpunkt, FactGrid-Benutzer,
+`anbieter/modell`, `input`/`cached`/`cache_write`/`output`, die Zahl der Requests im Tool-Loop
+(`steps`), Dauer, Gesprächs-ID und `key` – ob der eigene Schlüssel aus dem Profil oder der aus `.env`
+bezahlt hat. Weicht das tatsächlich bediente Modell vom angefragten ab (OpenAI löst einen Alias in
+einen datierten Schnappschuss auf, OpenRouter kann umleiten), steht es zusätzlich in `model_api`;
+gruppiert wird trotzdem über das angefragte `model`, damit die Reihen stabil bleiben. Eine Zeile je Antwort statt fortlaufender Summen, damit sich hinterher jeder Zeitraum,
+jedes Modell und jede Person einzeln auszählen lässt; Frage und Antwort stehen **nicht** darin, die
+liegen im Gespräch. Die Zahlen der vier Anbieter werden dafür auf eine gemeinsame Form gebracht:
+`input` ist alles, was in die Requests ging, **einschließlich** der aus dem Cache gelesenen Tokens –
+OpenAI, OpenRouter und DeepSeek zählen sie ohnehin mit, Anthropic führt sie daneben
+(`cache_read_input_tokens`, `cache_creation_input_tokens`) und sie werden dazugerechnet, sonst sähe
+ein gecachter Request nach fast keiner Eingabe aus. Ein Preis steht bewusst nicht dabei: Preislisten
+veralten, die Tokenzahlen nicht.
+
+Wo die Zahlen im Stream stehen, ist anbieterabhängig und eine Stolperstelle: die Responses-API
+liefert sie im Ereignis `response.completed`, Anthropic in der Schlussnachricht – und DeepSeek hängt
+sie an den **letzten Chunk, der noch `choices` trägt** (den mit `finish_reason`), nicht an einen
+eigenen Chunk ohne `choices`, wie es andere OpenAI-kompatible APIs tun. Beides wird gelesen; ohne
+`stream_options={"include_usage": true}` käme überhaupt nichts. Geprüft ist das gegen eine echte
+Antwort von `api.deepseek.com` und in `tests/test_usage.py` gegen beide Chunk-Formen. Schlägt das Schreiben fehl, steht das im Journal des Dienstes und
+die Antwort läuft weiter – die Buchhaltung darf nie eine Antwort kaputtmachen.
+
+Ausgezählt wird mit `make usage` (`scripts/chat_usage.py`), Argumente gehen über `ARGS` durch:
+
+```
+make usage                                          # alle Benutzer, ganzer Zeitraum
+make usage ARGS="--by user+model --since 2026-09"   # Benutzer × Modell, ab September
+make usage ARGS="--user 'Olaf Simons' --by day"     # eine Person, Tag für Tag
+make usage ARGS="--by key --json"                   # Profil- gegen Server-Schlüssel, maschinenlesbar
+```
+
+`--by` kennt `user`, `model`, `key`, `day`, `month` und Kombinationen mit `+`; `--since`/`--until`
+vergleichen das ISO-Datum als Präfix, `2026`, `2026-09` und `2026-09-19` gehen also alle.
+
+**Dateien herunterladen.** Alles Tabellarische einer Antwort ist ein Klick von einer Datei
 entfernt: jede Markdown-Tabelle und jedes Tool-Ergebnis bekommt einen TSV-Knopf, jeder Codeblock mit
 Datei-Sprache (```` ```tsv ````, ```` ```csv ````, ```` ```json ````, ```` ```rq ```` …) einen Knopf in
 seinem Format. Gebaut wird die Datei im Browser (`Blob` + `<a download>`): Markdown-Tabellen aus dem Angezeigten,
@@ -320,15 +362,15 @@ Gespräch **ohne Anmeldung lesbar – und nur lesbar**: dieselbe Oberfläche ohn
 Modellwahl, dafür mit dem vollen Verlauf samt aufklappbaren Tool-Aufrufen und SPARQL
 (`GET /api/shared?token=…` liefert den Verlauf ohne den Namen des Besitzers und ohne das Feld `reasoning`).
 In der Kopfzeile steht das Datum des Gesprächs, nicht der heutige Datenstand – die Antworten stammen aus
-dem Spiegel von damals. Angehängte Dateien gehören zum Gespräch und sind damit auch über den Link lesbar
-(und herunterladbar) – wer etwas anhängt, was nicht weitergegeben werden soll, teilt dieses Gespräch besser
-nicht. Das Token (`secrets.token_urlsafe(16)`, in der Gesprächsdatei unter `share`) ändert
+dem Spiegel von damals. Das Token (`secrets.token_urlsafe(16)`, in der Gesprächsdatei unter `share`) ändert
 sich nie und ist der ganze Zugangsschutz: erraten oder aufzählen lässt sich der Link nicht, öffentlich ist
 er so weit, wie man ihn selbst weitergibt; `X-Robots-Tag: noindex` hält Suchmaschinen draußen, und Löschen
 des Gesprächs macht den Link tot. Geschrieben wird nie im Original: „Weiterführen“
 (`POST /api/shared/continue`, nur angemeldet) legt eine Kopie mit neuer ID und eigenem Link an, die der
 Angemeldete als eigenes Gespräch fortsetzt – zwei Leute können denselben Link unabhängig voneinander
 weiterspinnen, das Original bleibt, wie es war.
+
+### 3.7 MediaWiki-Datenbank – Bearbeitungsgeschichte (`scripts/mw_load.py`, `mcp/factgrid_mcp/mwdb.py`)
 
 Der JSON-Dump enthält nur den aktuellen Zustand der Entitäten; **wer wann was bearbeitet hat**, steht
 allein in der MediaWiki-Datenbank. FactGrid liefert davon monatlich einen vollständigen MariaDB-Dump
@@ -453,6 +495,11 @@ Tests: `tests/test_briefing.py` prüft die Berechnung der Berichtswoche (auch ü
 Faktenblock, die Abbruchregeln, das Rendern (fett, verlinkte IDs, Escaping) und die fertige
 zweiteilige Nachricht – ohne Datenbank, ohne Modell, ohne SMTP.
 
+## 4. Schnellstart
+
+Voraussetzungen: Python ≥ 3.10, `uv` (oder `pipx`), `pigz` (optional), Docker oder das native QLever-Paket,
+ein OpenRouter-Schlüssel (oder ein Anthropic-Schlüssel bzw. `ant auth login`).
+
 ```bash
 pipx install qlever                       # QLever-CLI
 cd factgrid-local
@@ -494,11 +541,6 @@ Arbeitsablauf, der in `CLAUDE.md` und in der MCP-`instructions` steht: erst `sch
 per `search_entities` auflösen, bei Unsicherheit ein Beispiel-Item mit `get_entity` anschauen, erst dann
 `sparql` – und bei Fehlern die zurückgegebene QLever-Meldung zur Korrektur nutzen. Ergebnisse über 200 Zeilen
 werden abgeschnitten, was das Modell zu Aggregationen zwingt statt Rohdaten in den Kontext zu ziehen.
-
-## 4. Schnellstart
-
-Voraussetzungen: Python ≥ 3.10, `uv` (oder `pipx`), `pigz` (optional), Docker oder das native QLever-Paket,
-ein OpenRouter-Schlüssel (oder ein Anthropic-Schlüssel bzw. `ant auth login`).
 
 **Kostenfalle.** Was früher Rechenzeit war, ist jetzt Token-Verbrauch. Claude Code bringt einen
 System-Prompt von grob 15–20 k Token mit, die pro Frage neu im Kontext stehen; jeder Tool-Aufruf hängt
@@ -565,7 +607,7 @@ in `eval/questions.jsonl` aufnehmen.
 ```
 factgrid-local/
 ├── README.md               diese Architekturdoku
-├── Makefile                fetch · convert · index · start · refresh · mcp · chat · test · smoke · agent
+├── Makefile                fetch · convert · index · start · refresh · mcp · chat · usage · test · smoke · agent
 ├── Qleverfile.in           Vorlage der QLever-Konfiguration (32-GB-Profil) → qlever/Qleverfile
 ├── .mcp.json               Claude-Code-Registrierung des MCP-Servers
 ├── CLAUDE.md               Arbeitsanweisung für das Modell (auch System-Prompt des Mini-Agenten)
@@ -577,13 +619,15 @@ factgrid-local/
 ├── mcp/                    factgrid-mcp (FastMCP, 10 Tools): server.py, qlever.py, labelservice.py, prefixes.py, mwdb.py
 ├── agent/mini_agent.py     Tool-Loop ohne Claude Code (OpenRouter/Anthropic)
 ├── chat/                   Web-Chatbot mit Modellauswahl (server.py, index.html)
+├── scripts/weekly_briefing.py  Wochenbriefing an die Community-Liste (freitags 08:00 Ortszeit)
+├── scripts/chat_usage.py   Token-Verbrauch des Web-Chats auszählen (make usage)
 ├── eval/                   questions.jsonl, run_eval.py, runs/
 ├── ops/                    systemd-Units: täglicher QLever-Refresh (02:00), Chat-Dienst, täglicher SQL-Dump-Import (06:00)
-├── tests/                  test_wb2rdf.py, test_mcp.py, test_mwdb.py, mock_sparql.py
+├── tests/                  test_wb2rdf.py, test_mcp.py, test_mwdb.py, test_chat_backends.py,
+│                           test_oauth.py, test_usage.py, test_briefing.py, mock_sparql.py
 └── LICENSE                 MIT
 ```
 
 ## 11. Lizenz
 
 MIT, siehe `LICENSE`.
-├── scripts/weekly_briefing.py  Wochenbriefing an die Community-Liste (freitags 08:00 Ortszeit)

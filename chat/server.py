@@ -29,15 +29,17 @@ er in das Format des gewählten Providers übersetzt. Dadurch kann das Modell mi
 Gespräch gewechselt werden – auch zwischen Providern. Die Oberfläche listet die
 Gespräche in einer Seitenleiste (/api/chats) und kann einzelne löschen.
 
+Angemeldet wird sich mit dem FactGrid-Konto (MediaWiki-OAuth 1.0a, chat/mwoauth.py),
+sobald FACTGRID_OAUTH_KEY/_SECRET gesetzt sind; ohne die beiden läuft der Chat offen,
+aber nur auf 127.0.0.1. Profil (API-Schlüssel) und Gespräche hängen am FactGrid-Namen.
+
 Jedes gespeicherte Gespräch hat einen permanenten Link /s/<token>, unter dem es ohne
 Anmeldung gelesen (nicht geschrieben) werden kann; wer angemeldet ist, kann es über
 /api/shared/continue als eigenes Gespräch mit neuer ID und neuem Link weiterführen.
 
-An eine Frage lassen sich Dateien anhängen (/api/upload). Sie werden beim Hochladen in
-Text verwandelt und wandern mit der Frage in den Verlauf; das Modell sieht sie als Teil
-der Benutzer-Nachricht. Umgekehrt bietet die Oberfläche jede Tabelle und jeden
-```tsv/```csv-Codeblock einer Antwort als Datei zum Herunterladen an (im Browser aus
-dem Angezeigten gebaut, ohne Umweg über den Server).
+Die Oberfläche bietet jede Tabelle und jeden ```tsv/```csv-Codeblock einer Antwort als
+Datei zum Herunterladen an (im Browser aus dem Angezeigten gebaut, ohne Umweg über den
+Server). Der umgekehrte Weg - Dateien an eine Frage hängen - ist bewusst nicht da.
 """
 from __future__ import annotations
 
@@ -45,7 +47,6 @@ import copy
 import json
 import os
 import re
-import shutil
 import sys
 import time
 import uuid
@@ -64,14 +65,17 @@ load_env(ROOT / ".env")
 
 from contextlib import asynccontextmanager  # noqa: E402
 
-import base64  # noqa: E402
 import secrets  # noqa: E402
+from urllib.parse import quote  # noqa: E402
 
 from fastapi import FastAPI, Request  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import (  # noqa: E402
+    FileResponse, JSONResponse, RedirectResponse, StreamingResponse,
+)
 from fastmcp import Client  # noqa: E402
 
 from factgrid_mcp.server import mcp as SERVER  # noqa: E402
+from mwoauth import MwOAuth, OAuthError  # noqa: E402  (chat/mwoauth.py)
 
 SYSTEM = (ROOT / "CLAUDE.md").read_text(encoding="utf-8") if (ROOT / "CLAUDE.md").exists() else (
     "Du beantwortest Fragen zu FactGrid über die bereitgestellten Tools. Erst search_entities, "
@@ -80,8 +84,7 @@ SYSTEM = (ROOT / "CLAUDE.md").read_text(encoding="utf-8") if (ROOT / "CLAUDE.md"
 
 # ---------------------------------------------------------------------------
 # Neutrales Gesprächsformat (Sitzung → Provider-Format erst beim Request):
-#   {"role": "user", "content": str, "files": [{"name", "size", "chars", "lines",
-#                                               "truncated", "text"}]}
+#   {"role": "user", "content": str}
 #   {"role": "assistant", "content": str, "tool_calls": [{"id", "name", "args"}]}
 #   {"role": "tool", "id": str, "name": str, "content": str}
 # Gespräche liegen in der Ablage unten (get_chat/save_chat), je Benutzer und Gespräch.
@@ -89,50 +92,21 @@ SYSTEM = (ROOT / "CLAUDE.md").read_text(encoding="utf-8") if (ROOT / "CLAUDE.md"
 MCP_TOOLS: list = []  # von client.list_tools(), einmal beim Start
 
 
-def attachment_text(f: dict) -> str:
-    """Eine angehängte Datei im Prompt: Steckbrief und die ersten UPLOAD_PREVIEW Zeichen.
-    Der ganze Inhalt bleibt auf dem Server – dafür sind die Werkzeuge da, sonst läge die
-    Datei in jeder Folgefrage wieder im Kontext."""
-    facts = [f"{f.get('lines', 0)} Zeilen", f"{f.get('chars', 0)} Zeichen"]
-    if f.get("part"):      # der Browser hat nur den Anfang einer zu großen Datei geschickt
-        facts.insert(0, "nur der Anfang der hochgeladenen Datei")
-    if f.get("columns"):
-        facts.append(f"Trennzeichen {f.get('delim_label', '?')}, {len(f['columns'])} Spalten: "
-                     + ", ".join(f["columns"]))
-    return (f"--- Angehängte Datei: {f['name']} ({'; '.join(facts)}) ---\n"
-            f"{f.get('head') or ''}\n"
-            f"--- Ende des Anfangs von {f['name']}. Die ganze Datei liegt auf dem Server: "
-            f"read_attachment (Zeilen lesen), search_attachment (Zeilen suchen), "
-            f"column_stats (Spalte auszählen). ---")
-
-
 def user_content(m: dict) -> str:
-    """Neutrale Benutzer-Nachricht → Text für den Provider: die Frage, darunter die
-    angehängten Dateien. Alle vier Backends gehen hier durch, damit ein Anhang in jedem
-    Format ankommt (keiner der Provider bekommt Dateien als eigenen Block)."""
-    text = (m.get("content") or "").strip()
-    files = m.get("files") or []
-    if not files:
-        return m.get("content") or ""
-    return "\n\n".join([text or "(keine Frage – siehe die angehängte(n) Datei(en))"]
-                       + [attachment_text(f) for f in files])
+    """Neutrale Benutzer-Nachricht → Text für den Provider. Alle vier Backends gehen hier
+    durch, damit eine Frage überall gleich ankommt."""
+    return m.get("content") or ""
 
 
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "z-ai/glm-5.3-flash")
 
 
-def tool_specs(with_attachments: bool = False) -> list[dict]:
-    """Die Werkzeuge für diesen Request: die MCP-Tools, und in einem Gespräch mit Anhängen
-    zusätzlich die Werkzeuge auf den Dateien (LOCAL_TOOLS). Ohne Anhang bleiben sie weg –
-    sie kosten sonst in jedem Request Kontext und laden zu sinnlosen Aufrufen ein."""
-    specs = [{"name": t.name, "description": (t.description or "")[:600],
-              "schema": t.inputSchema or {"type": "object", "properties": {}}}
-             for t in MCP_TOOLS]
-    if with_attachments:
-        specs += [{"name": name, "description": t["description"][:600], "schema": t["schema"]}
-                  for name, t in LOCAL_TOOLS.items()]
-    return specs
+def tool_specs() -> list[dict]:
+    """Die Werkzeuge für diesen Request: die Tools des MCP-Servers."""
+    return [{"name": t.name, "description": (t.description or "")[:600],
+             "schema": t.inputSchema or {"type": "object", "properties": {}}}
+            for t in MCP_TOOLS]
 
 
 def _tools_responses(specs: list[dict]) -> list[dict]:
@@ -163,9 +137,69 @@ def _parse_args(args) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Token-Verbrauch. Jeder Anbieter zählt anders; für die Buchhaltung (.chat-usage.jsonl)
+# werden die Zahlen auf eine gemeinsame Form gebracht:
+#   input        alles, was in den Request ging, einschließlich der aus dem Cache
+#                gelesenen Tokens. OpenAI und DeepSeek zählen sie ohnehin mit, bei
+#                Anthropic stehen sie daneben und werden hier dazugerechnet - sonst
+#                sähe ein gecachter Request nach fast keiner Eingabe aus.
+#   cached       davon aus dem Prompt-Cache gelesen (billiger als frische Eingabe)
+#   cache_write  in den Cache geschrieben (nur Anthropic, teurer als frische Eingabe)
+#   output       erzeugte Tokens
+# Ein Preis steht bewusst nicht dabei: Preislisten veralten, die Tokenzahlen nicht.
+# ---------------------------------------------------------------------------
+USAGE_FIELDS = ("input", "cached", "cache_write", "output")
+
+
+def _num(obj, *names) -> int:
+    """Erste vorhandene Zahl aus einem Usage-Objekt (SDK-Objekt oder dict)."""
+    for name in names:
+        value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        if isinstance(value, (int, float)):
+            return int(value)
+    return 0
+
+
+def zero_usage() -> dict:
+    return dict.fromkeys(USAGE_FIELDS, 0)
+
+
+def add_usage(total: dict, part: dict | None) -> dict:
+    """Die Schritte eines Tool-Loops aufaddieren - jeder Schritt ist ein eigener Request."""
+    for field in USAGE_FIELDS:
+        total[field] += int((part or {}).get(field, 0) or 0)
+    return total
+
+
+def usage_responses(u) -> dict:
+    """Responses-API (OpenAI, OpenRouter): input_tokens enthält die gecachten schon."""
+    details = getattr(u, "input_tokens_details", None) or {}
+    return {"input": _num(u, "input_tokens"), "cached": _num(details, "cached_tokens"),
+            "cache_write": 0, "output": _num(u, "output_tokens")}
+
+
+def usage_anthropic(u) -> dict:
+    """Anthropic: input_tokens sind NUR die frischen - Cache-Lesen und -Schreiben zählen
+    daneben und werden für `input` dazugerechnet."""
+    cached, written = _num(u, "cache_read_input_tokens"), _num(u, "cache_creation_input_tokens")
+    return {"input": _num(u, "input_tokens") + cached + written, "cached": cached,
+            "cache_write": written, "output": _num(u, "output_tokens")}
+
+
+def usage_chat(u) -> dict:
+    """Chat-Completions (DeepSeek): prompt_tokens enthält Cache-Treffer und -Schreiben schon
+    (prompt_cache_hit_tokens + prompt_cache_miss_tokens = prompt_tokens)."""
+    details = getattr(u, "prompt_tokens_details", None) or {}
+    return {"input": _num(u, "prompt_tokens"),
+            "cached": _num(u, "prompt_cache_hit_tokens") or _num(details, "cached_tokens"),
+            "cache_write": _num(details, "cache_write_tokens"),
+            "output": _num(u, "completion_tokens")}
+
+
+# ---------------------------------------------------------------------------
 # Provider-Backends. step() ist ein Async-Generator über SSE-Events und liefert
 # als letztes Event {"type": "_step_end", "msg": <nativ>, "text": str,
-# "calls": [{"id","name","args"}]}. Innerhalb eines Tool-Loops bleiben die
+# "calls": [{"id","name","args"}], "usage": {...}}. Innerhalb eines Tool-Loops bleiben die
 # Nachrichten im nativen Format (Anthropic braucht z. B. seine thinking-Blöcke
 # zwischen tool_use und tool_result unverändert zurück).
 # ---------------------------------------------------------------------------
@@ -202,7 +236,7 @@ class ResponsesBackend:
         return [{"type": "function_call_output", "call_id": r["id"], "output": r["content"]} for r in results]
 
     async def step(self, model: str, msgs: list[dict], specs: list[dict]):
-        text, items = "", []
+        text, items, usage, used = "", [], zero_usage(), ""
         stream = await self.client.responses.create(
             model=model, input=msgs, instructions=SYSTEM, tools=_tools_responses(specs),
             stream=True, store=False, **({"include": self.include} if self.include else {}),
@@ -216,13 +250,16 @@ class ResponsesBackend:
                 items.append(ev.item)
             elif kind == "response.completed":
                 items = list(ev.response.output)  # vollständige Liste, schlägt die Einzel-Items
+                usage = usage_responses(getattr(ev.response, "usage", None))
+                used = getattr(ev.response, "model", "") or ""   # aufgelöster Schnappschuss
         # Die Output-Items (auch reasoning-Items) unverändert zurückgeben – der nächste
         # Request muss den kompletten Verlauf enthalten.
         native = [i.model_dump(exclude_none=True) if hasattr(i, "model_dump") else dict(i) for i in items]
         calls = [{"id": i["call_id"], "item_id": i.get("id"), "name": i["name"],
                   "args": _parse_args(i.get("arguments"))}
                  for i in native if i.get("type") == "function_call"]
-        yield {"type": "_step_end", "msg": native, "text": text, "calls": calls}
+        yield {"type": "_step_end", "msg": native, "text": text, "calls": calls,
+               "usage": usage, "model_used": used}
 
 
 class OpenRouterBackend(ResponsesBackend):
@@ -314,7 +351,8 @@ class AnthropicBackend:
         # final.content nativ zurückgeben – enthält ggf. thinking-Blöcke, die im
         # Tool-Loop unverändert zurückgeschickt werden müssen.
         yield {"type": "_step_end", "msg": {"role": "assistant", "content": final.content},
-               "text": text, "calls": calls}
+               "text": text, "calls": calls, "usage": usage_anthropic(final.usage),
+               "model_used": getattr(final, "model", "") or ""}
 
 
 class OpenAIBackend(ResponsesBackend):
@@ -390,15 +428,23 @@ class DeepSeekBackend:
 
     async def step(self, model: str, msgs: list[dict], specs: list[dict]):
         kw: dict = {"model": model, "messages": msgs, "tools": _tools_chat(specs), "stream": True,
+                    "stream_options": {"include_usage": True},   # sonst kein Schluss-Chunk mit usage
                     "max_tokens": self.max_tokens, "extra_body": {"thinking": {"type": self.thinking}}}
         if self.effort:
             kw["reasoning_effort"] = self.effort
         stream = await self.client.chat.completions.create(**kw)
-        text, reasoning = "", ""
+        text, reasoning, usage, used = "", "", zero_usage(), ""
         calls: dict[int, dict] = {}  # index → {id, name, arguments}
         async for chunk in stream:
+            # Die Tokenzahlen stehen im Schluss-Chunk - bei DeepSeek zusammen mit choices
+            # (finish_reason), bei anderen OpenAI-kompatiblen APIs in einem eigenen Chunk
+            # ohne choices. Darum hier und nicht erst im choices-losen Zweig; sie sind
+            # kumulativ für die ganze Antwort, also setzen statt addieren.
+            if getattr(chunk, "usage", None):
+                usage = usage_chat(chunk.usage)
+                used = getattr(chunk, "model", "") or used
             if not getattr(chunk, "choices", None):
-                continue  # z. B. der abschließende usage-Chunk
+                continue
             delta = chunk.choices[0].delta
             if delta is None:
                 continue
@@ -426,6 +472,7 @@ class DeepSeekBackend:
                                      "function": {"name": c["name"], "arguments": c["arguments"]}}
                                     for c in tool_calls]
         yield {"type": "_step_end", "msg": native, "text": text, "reasoning": reasoning,
+               "usage": usage, "model_used": used,
                "calls": [{"id": c["id"], "name": c["name"], "args": _parse_args(c["arguments"])}
                          for c in tool_calls]}
 
@@ -584,6 +631,38 @@ def model_info(user: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Buchhaltung: je Antwort eine Zeile in .chat-usage.jsonl (FACTGRID_CHAT_USAGE) - wer hat
+# mit welchem Modell wie viele Tokens verbraucht und auf wessen Schlüssel (Profil oder
+# Server). Eine Zeile je Antwort statt fortlaufender Summen, damit sich hinterher jeder
+# Zeitraum, jedes Modell und jede Person einzeln auszählen lässt. Fragen und Antworten
+# stehen nicht darin - die liegen im Gespräch. Ausgewertet mit `make usage`
+# (scripts/chat_usage.py).
+# ---------------------------------------------------------------------------
+USAGE_PATH = Path(os.environ.get("FACTGRID_CHAT_USAGE", str(ROOT / ".chat-usage.jsonl")))
+
+
+def record_usage(user: str, model: str, chat_id: str, usage: dict, steps: int,
+                 seconds: float, key_source: str, model_api: str = "") -> None:
+    """Eine Zeile anhängen. Die Buchhaltung darf nie eine Antwort kaputtmachen: schlägt das
+    Schreiben fehl, steht das im Journal des Dienstes und sonst passiert nichts."""
+    line = {"ts": datetime.now().isoformat(timespec="seconds"), "user": user, "model": model,
+            **{field: int(usage.get(field, 0)) for field in USAGE_FIELDS},
+            "steps": steps, "seconds": seconds, "chat": chat_id, "key": key_source}
+    # Was der Anbieter tatsächlich bedient hat - nur wenn es vom angefragten Namen abweicht
+    # (OpenAI löst einen Alias in einen datierten Schnappschuss auf, OpenRouter kann umleiten).
+    if model_api and model_api != model.split("/", 1)[-1]:
+        line["model_api"] = model_api
+    try:
+        neu = not USAGE_PATH.exists()
+        with open(USAGE_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+        if neu:
+            os.chmod(USAGE_PATH, 0o600)     # wer was verbraucht, geht sonst niemanden an
+    except OSError as e:
+        print(f"Verbrauch nicht notiert ({USAGE_PATH}): {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Tool-Loop (providerneutral) + SSE
 # ---------------------------------------------------------------------------
 MCP_CLIENT: Client | None = None
@@ -679,8 +758,6 @@ def save_chat(user: str, chat: dict) -> None:
     if not chat.get("title"):
         msg = next((m for m in chat["messages"] if m.get("role") == "user"), {})
         first = " ".join((msg.get("content") or "").split())
-        if not first:                     # Frage nur mit Anhang: die Dateinamen als Titel
-            first = ", ".join(f["name"] for f in msg.get("files") or [])
         chat["title"] = first if len(first) <= TITLE_LEN else first[:TITLE_LEN - 1].rstrip() + "…"
     chat["updated"] = _now()
     ensure_share(user, chat)
@@ -703,9 +780,6 @@ def delete_chat(user: str, chat_id: str) -> bool:
     CHATS.pop((_owner(user), chat_id), None)
     if chat:
         SHARES.pop(chat.get("share") or "", None)   # der Link ist damit tot
-    folder = _files_dir(user, chat_id)              # und die angehängten Dateien
-    if folder is not None and folder.is_dir():
-        shutil.rmtree(folder, ignore_errors=True)
     path = _chat_path(user, chat_id)
     if path is not None and path.exists():
         path.unlink()
@@ -766,427 +840,16 @@ def shared_chat(token: str) -> tuple[str, dict] | None:
     return hit[0], chat
 
 
-# ---------------------------------------------------------------------------
-# Datei-Anhänge. Hochgeladene Dateien werden beim Upload in Text verwandelt
-# (Text/CSV/TSV/JSON/XML/Markdown direkt, PDF über pypdf) und liegen bis zum Absenden
-# je Benutzer in .chat-uploads/<benutzer>/<id>.{json,txt}. Mit der Frage zieht die
-# Textdatei ins Gespräch (.chat-history/<benutzer>/<gespräch>.files/<id>.txt) und wird
-# mit ihm gelöscht.
-#
-# In den Prompt geht NUR der Steckbrief und der Anfang der Datei (UPLOAD_PREVIEW
-# Zeichen): der Verlauf wandert bei jeder Folgefrage komplett wieder zum Anbieter, ein
-# ganzer 16-MB-Anhang würde also bei jeder Frage neu bezahlt. Für alles Weitere
-# bekommt das Modell Werkzeuge auf der Datei (LOCAL_TOOLS unten): Zeilenfenster lesen,
-# Zeilen suchen, eine Spalte auszählen - die laufen hier im Prozess auf der ganzen
-# Datei, und nur das Ergebnis kostet Kontext.
-#
-# Bilder und Office-Dateien nimmt der Chat nicht an: dafür hat jeder der vier Provider
-# ein eigenes Format, und der Weg über CSV/TSV ist für Tabellen ohnehin der bessere.
-# ---------------------------------------------------------------------------
-UPLOAD_DIR = Path(os.environ.get("FACTGRID_CHAT_UPLOADS", str(ROOT / ".chat-uploads")))
-UPLOAD_MAX = int(os.environ.get("FACTGRID_CHAT_UPLOAD_MAX", str(32 * 1024 * 1024)))
-UPLOAD_PREVIEW = int(os.environ.get("FACTGRID_CHAT_UPLOAD_PREVIEW", "2000"))
-UPLOAD_TTL = int(os.environ.get("FACTGRID_CHAT_UPLOAD_TTL", str(24 * 3600)))
-UPLOAD_MAX_FILES = 10
-_UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
-# Anfangsbytes, an denen ein Nicht-Text-Format sicher zu erkennen ist - damit die
-# Fehlermeldung sagt, WAS da hochgeladen wurde, statt Kauderwelsch anzuhängen.
-BINARY_MAGIC = [(b"PK\x03\x04", "Eine Office-/ZIP-Datei (docx, xlsx, odt …)"),
-                (b"\x89PNG", "Ein Bild"), (b"\xff\xd8\xff", "Ein Bild"), (b"GIF8", "Ein Bild"),
-                (b"\x1f\x8b", "Ein gzip-Archiv"), (b"Rar!", "Ein Archiv"), (b"\x7fELF", "Ein Programm"),
-                (b"{\\rtf", "Eine RTF-Datei"), (b"\xd0\xcf\x11\xe0", "Eine alte Office-Datei (doc, xls)")]
-TEXT_HINT = ("Der Chat liest Text (TXT, CSV/TSV, JSON, XML/TTL, Markdown, SPARQL) und PDF. "
-             "Tabellen aus Excel bitte als CSV oder TSV speichern.")
-
-
-def _decode(data: bytes) -> str | None:
-    """Bytes → Text. UTF-8 (auch mit BOM) zuerst, dann die Windows-Kodierung, in der Excel
-    CSV schreibt. NUL-Bytes heißen: keine Textdatei."""
-    if b"\x00" in data[:8192]:
-        return None
-    for enc in ("utf-8-sig", "cp1252", "latin-1"):
-        try:
-            return data.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return None
-
-
-def _pdf_text(data: bytes) -> tuple[str, str]:
-    """Text eines PDFs, Seite für Seite. Ohne pypdf (Extra "chat") geht es nicht, und aus
-    einem Scan ohne OCR kommt nichts heraus - beides sagt die Fehlermeldung."""
-    try:
-        from pypdf import PdfReader
-    except ImportError:
-        return "", "PDF-Dateien brauchen das Paket pypdf auf dem Server (uv sync --all-extras)."
-    import io
-    try:
-        pages = [(page.extract_text() or "").strip() for page in PdfReader(io.BytesIO(data)).pages]
-    except Exception as e:
-        return "", f"Das PDF ließ sich nicht lesen: {str(e)[:150]}"
-    text = "\n\n".join(f"[Seite {i}]\n{t}" for i, t in enumerate(pages, 1) if t)
-    if not text:
-        return "", "Aus diesem PDF kommt kein Text - vermutlich ein Scan ohne Texterkennung."
-    return text, ""
-
-
-def extract_text(name: str, data: bytes) -> tuple[str, str]:
-    """(Text, Fehlermeldung) einer hochgeladenen Datei; genau eins von beiden ist gefüllt."""
-    if data[:5] == b"%PDF-" or name.lower().endswith(".pdf"):
-        return _pdf_text(data)
-    for magic, what in BINARY_MAGIC:
-        if data.startswith(magic):
-            return "", f"{what} - damit kann das Modell hier nichts anfangen. {TEXT_HINT}"
-    text = _decode(data)
-    if text is None:
-        return "", f"Das ist keine Textdatei. {TEXT_HINT}"
-    return text.replace("\r\n", "\n").replace("\r", "\n"), ""
-
-
-def _safe_name(name: str) -> str:
-    """Dateiname nur zur Anzeige - Pfadanteile, Steuerzeichen und Überlänge weg."""
-    name = re.sub(r"[\x00-\x1f]", "", (name or "").replace("\\", "/").rsplit("/", 1)[-1]).strip()
-    return name[:120] or "datei.txt"
-
-
-def _upload_dir(user: str) -> Path:
-    return UPLOAD_DIR / _owner(user)
-
-
-def _upload_path(user: str, upload_id: str, suffix: str = ".json") -> Path | None:
-    """Zwischenablage eines Uploads: <id>.json der Steckbrief, <id>.txt der volle Text."""
-    return _upload_dir(user) / f"{upload_id}{suffix}" if _UPLOAD_ID.match(upload_id or "") else None
-
-
-def prune_uploads() -> None:
-    """Zwischenablage nach UPLOAD_TTL leeren. Abgeschickte Anhänge liegen dann längst im
-    Gespräch; hier verschwindet nur, was nie abgeschickt wurde (und die Kopiervorlage)."""
-    cutoff = time.time() - UPLOAD_TTL
-    for path in UPLOAD_DIR.glob("*/*.*"):
-        try:
-            if path.stat().st_mtime < cutoff:
-                path.unlink()
-        except OSError:
-            pass
-
-
-# Trennzeichen einer Tabelle, in der Reihenfolge, in der wir sie ausprobieren.
-DELIMITERS = [("\t", "Tabulator"), (";", "Semikolon"), (",", "Komma"), ("|", "Strich")]
-
-
-def file_profile(text: str) -> dict:
-    """Steckbrief einer Textdatei: Zeilen, Zeichen und - wenn es eine Tabelle ist -
-    Trennzeichen und Spaltennamen. Als Tabelle gilt nur, was in der zweiten Zeile
-    genauso viele Trennzeichen hat wie in der ersten; Fließtext fällt so nicht herein."""
-    lines = text.split("\n")
-    first = lines[0] if lines else ""
-    prof = {"chars": len(text), "lines": len(text.splitlines()) or 1}
-    delim, label = max(DELIMITERS, key=lambda d: first.count(d[0]))
-    if first.count(delim) and len(lines) > 1 and lines[1].count(delim) == first.count(delim):
-        prof["delim"] = delim
-        prof["delim_label"] = label
-        prof["columns"] = [c.strip().strip('"') for c in first.split(delim)][:60]
-    return prof
-
-
-def save_upload(user: str, name: str, size: int, text: str, part: bool = False) -> dict:
-    """Anhang in die Zwischenablage legen; zurück kommt der Steckbrief für die Oberfläche."""
-    prune_uploads()
-    meta = dict(file_profile(text), id=uuid.uuid4().hex, name=_safe_name(name), size=size, part=part,
-                head=text[:UPLOAD_PREVIEW])
-    path = _upload_path(user, meta["id"])
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _write_private(_upload_path(user, meta["id"], ".txt"), text)
-    _write_private(path, json.dumps(meta, ensure_ascii=False))
-    return meta
-
-
-def _write_private(path: Path, text: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
-
-
-def read_upload(user: str, upload_id: str) -> dict | None:
-    """Steckbrief eines Anhangs aus der Zwischenablage; None bei unbekannter ID."""
-    path = _upload_path(user, str(upload_id or ""))
-    if path is None or not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-
-# --- Anhänge eines Gesprächs ----------------------------------------------
-# Die Textdateien liegen neben der Gesprächsdatei in <gespräch>.files/ - ein Gespräch
-# löschen heißt damit auch seine Anhänge löschen, eine Kopie (Weiterführen eines
-# geteilten Gesprächs) bekommt eigene Dateien.
-def _files_dir(user: str, chat_id: str) -> Path | None:
-    path = _chat_path(user, chat_id)
-    return path.with_suffix(".files") if path is not None else None
-
-
-def attach_upload(user: str, chat_id: str, upload_id: str) -> dict | None:
-    """Anhang aus der Zwischenablage in das Gespräch übernehmen: Textdatei kopieren (die
-    Vorlage bleibt liegen, damit ein zweiter Versuch nach einem Fehler noch geht), Steckbrief
-    für den Verlauf zurückgeben."""
-    meta = read_upload(user, upload_id)
-    src = _upload_path(user, str(upload_id or ""), ".txt")
-    folder = _files_dir(user, chat_id)
-    if meta is None or src is None or not src.exists() or folder is None:
-        return None
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    dst = folder / f"{meta['id']}.txt"
-    shutil.copyfile(src, dst)
-    os.chmod(dst, 0o600)
-    return meta
-
-
-def attachment_file(user: str, chat_id: str, file_id: str) -> Path | None:
-    folder = _files_dir(user, chat_id)
-    if folder is None or not _UPLOAD_ID.match(file_id or ""):
-        return None
-    path = folder / f"{file_id}.txt"
-    return path if path.exists() else None
-
-
-_TEXT_CACHE: dict[str, tuple[float, str]] = {}   # Pfad -> (mtime, Text), höchstens 4 Dateien
-
-
-def attachment_content(user: str, chat_id: str, file_id: str) -> str:
-    """Der volle Text eines Anhangs. Gecacht, weil ein Modell in einer Antwort mehrmals
-    in dieselbe Datei schaut und eine 16-MB-Datei sonst jedes Mal neu von der Platte käme."""
-    path = attachment_file(user, chat_id, file_id)
-    if path is None:
-        return ""
-    key, mtime = str(path), path.stat().st_mtime
-    hit = _TEXT_CACHE.get(key)
-    if hit and hit[0] == mtime:
-        return hit[1]
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if len(_TEXT_CACHE) >= 4:
-        _TEXT_CACHE.pop(next(iter(_TEXT_CACHE)))
-    _TEXT_CACHE[key] = (mtime, text)
-    return text
-
-
-def chat_attachments(chat: dict) -> list[dict]:
-    """Alle Anhänge eines Gesprächs, in der Reihenfolge der Fragen."""
-    return [f for m in chat.get("messages", []) if m.get("role") == "user" for f in m.get("files") or []]
-
-
-def find_attachment(chat: dict, name: str) -> dict | None:
-    """Anhang nach Namen: genau, sonst als Teilstring (Groß/Klein egal). Ohne Namen der
-    einzige - das Modell soll nicht am Dateinamen scheitern."""
-    files = chat_attachments(chat)
-    if not files:
-        return None
-    if not (name or "").strip():
-        return files[-1] if len(files) == 1 else None
-    name = name.strip().lower()
-    return (next((f for f in files if f["name"].lower() == name), None)
-            or next((f for f in files if name in f["name"].lower()), None))
-
-
-# --- Werkzeuge auf den Anhängen -------------------------------------------
-# Laufen hier im Prozess auf der ganzen Datei; in den Kontext geht nur das Ergebnis.
-# Sie stehen dem Modell nur in Gesprächen mit Anhängen zur Verfügung (tool_specs).
-TOOL_OUT_MAX = 8000          # Zeichen je Werkzeug-Antwort
-READ_LINES_MAX = 400         # Zeilen je read_attachment
-HITS_MAX = 200               # Treffer je search_attachment
-
-
-def _cut(text: str, note: str = "… (gekürzt, bitte gezielter fragen)") -> str:
-    return text if len(text) <= TOOL_OUT_MAX else text[:TOOL_OUT_MAX].rsplit("\n", 1)[0] + "\n" + note
-
-
-def _no_file(chat: dict, name: str) -> str:
-    havent = ", ".join(f["name"] for f in chat_attachments(chat)) or "keine"
-    return f"FEHLER: Kein Anhang {name!r} in diesem Gespräch. Vorhanden: {havent}."
-
-
-def _columns_of(f: dict) -> list[str]:
-    return f.get("columns") or []
-
-
-def _column_index(f: dict, column: str) -> int:
-    """Spaltennummer (0-basiert) aus Name oder 1-basierter Nummer; -1 wenn es sie nicht gibt."""
-    cols = _columns_of(f)
-    column = str(column or "").strip()
-    if column.isdigit():
-        nr = int(column) - 1
-        return nr if 0 <= nr < len(cols) else -1
-    low = [c.lower() for c in cols]
-    return low.index(column.lower()) if column.lower() in low else -1
-
-
-def tool_list_attachments(ctx) -> str:
-    """Alle Anhänge des Gesprächs mit Steckbrief."""
-    user, chat = ctx
-    files = chat_attachments(chat)
-    if not files:
-        return "Dieses Gespräch hat keine angehängten Dateien."
-    out = []
-    for f in files:
-        line = f"{f['name']}: {f.get('lines', 0)} Zeilen, {f.get('chars', 0)} Zeichen"
-        if f.get("columns"):
-            line += (f", Trennzeichen {f.get('delim_label')}, {len(f['columns'])} Spalten: "
-                     + ", ".join(f["columns"]))
-        if f.get("part"):
-            line += " (nur der Anfang der hochgeladenen Datei)"
-        out.append(line)
-    return "\n".join(out)
-
-
-def tool_read_attachment(ctx, name: str = "", from_line: int = 1, lines: int = 100) -> str:
-    """Ein Zeilenfenster aus einem Anhang."""
-    user, chat = ctx
-    f = find_attachment(chat, name)
-    if f is None:
-        return _no_file(chat, name)
-    all_lines = attachment_content(user, chat["id"], f["id"]).splitlines()
-    total = len(all_lines)
-    start = max(1, int(from_line or 1))
-    count = max(1, min(int(lines or 100), READ_LINES_MAX))
-    window = all_lines[start - 1:start - 1 + count]
-    if not window:
-        return f"{f['name']} hat {total} Zeilen – ab Zeile {start} steht nichts mehr."
-    header = f"{f['name']}, Zeilen {start}–{start + len(window) - 1} von {total}:"
-    return _cut(header + "\n" + "\n".join(window))
-
-
-def tool_search_attachment(ctx, name: str = "", query: str = "", max_hits: int = 50,
-                           regex: bool = False) -> str:
-    """Zeilen eines Anhangs, die ein Suchwort (oder einen regulären Ausdruck) enthalten."""
-    user, chat = ctx
-    f = find_attachment(chat, name)
-    if f is None:
-        return _no_file(chat, name)
-    if not str(query or "").strip():
-        return "FEHLER: Kein Suchwort übergeben (query)."
-    try:
-        rx = re.compile(query if regex else re.escape(query), re.I)
-    except re.error as e:
-        return f"FEHLER: Der reguläre Ausdruck ist ungültig ({e})."
-    limit = max(1, min(int(max_hits or 50), HITS_MAX))
-    hits, found = [], 0
-    for nr, line in enumerate(attachment_content(user, chat["id"], f["id"]).splitlines(), 1):
-        if rx.search(line):
-            found += 1
-            if len(hits) < limit:
-                hits.append(f"{nr}: {line}")
-    if not found:
-        return f"Keine Zeile in {f['name']} enthält {query!r}."
-    head = f"{found} Treffer für {query!r} in {f['name']}" + (f", die ersten {limit}:" if found > limit else ":")
-    return _cut(head + "\n" + "\n".join(hits))
-
-
-def tool_column_stats(ctx, name: str = "", column: str = "", top: int = 30) -> str:
-    """Eine Spalte auszählen: gefüllt/leer, verschiedene Werte, die häufigsten."""
-    user, chat = ctx
-    f = find_attachment(chat, name)
-    if f is None:
-        return _no_file(chat, name)
-    cols = _columns_of(f)
-    if not cols:
-        return (f"{f['name']} ist keine Tabelle mit erkennbaren Spalten – "
-                "read_attachment oder search_attachment benutzen.")
-    nr = _column_index(f, column)
-    if nr < 0:
-        return f"FEHLER: Spalte {column!r} gibt es nicht. Spalten: " + ", ".join(cols)
-    delim = f.get("delim", "\t")
-    values: dict[str, int] = {}
-    filled = empty = 0
-    for line in attachment_content(user, chat["id"], f["id"]).splitlines()[1:]:
-        if not line.strip():
-            continue
-        parts = line.split(delim)
-        value = parts[nr].strip().strip('"') if nr < len(parts) else ""
-        if value:
-            filled += 1
-            values[value] = values.get(value, 0) + 1
-        else:
-            empty += 1
-    if not filled and not empty:
-        return f"{f['name']} hat außer der Kopfzeile keine Zeilen."
-    best = sorted(values.items(), key=lambda kv: (-kv[1], kv[0]))[:max(1, min(int(top or 30), 200))]
-    out = [f"{f['name']}, Spalte {nr + 1} ({cols[nr]}): {filled + empty} Zeilen, "
-           f"{filled} gefüllt, {empty} leer, {len(values)} verschiedene Werte.",
-           "Häufigste Werte (Wert\tAnzahl):"]
-    out += [f"{v}\t{n}" for v, n in best]
-    return _cut("\n".join(out))
-
-
-LOCAL_TOOLS: dict[str, dict] = {
-    "list_attachments": {
-        "fn": tool_list_attachments,
-        "description": ("Die an dieses Gespräch angehängten Dateien mit Umfang, Trennzeichen und "
-                        "Spaltennamen. Erster Griff, bevor du in einen Anhang schaust."),
-        "schema": {"type": "object", "properties": {}},
-    },
-    "read_attachment": {
-        "fn": tool_read_attachment,
-        "description": ("Zeilen aus einer angehängten Datei, von from_line an (1-basiert), höchstens "
-                        "400 auf einmal. Damit liest du die Datei stückweise, statt sie ganz in den "
-                        "Kontext zu holen."),
-        "schema": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "Dateiname (Teil genügt); bei nur einem Anhang optional."},
-            "from_line": {"type": "integer", "description": "Erste Zeile, 1-basiert (Vorgabe 1)."},
-            "lines": {"type": "integer", "description": "Anzahl Zeilen, höchstens 400 (Vorgabe 100)."}}},
-    },
-    "search_attachment": {
-        "fn": tool_search_attachment,
-        "description": ("Zeilen einer angehängten Datei, die query enthalten (Groß/Klein egal, mit "
-                        "regex=true als regulärer Ausdruck). Antwort: Zahl der Treffer und die Zeilen "
-                        "mit ihrer Zeilennummer. So prüfst du, ob ein Name in einer Liste steht."),
-        "schema": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "Dateiname (Teil genügt); bei nur einem Anhang optional."},
-            "query": {"type": "string", "description": "Suchwort oder regulärer Ausdruck."},
-            "max_hits": {"type": "integer", "description": "Höchstens so viele Zeilen zeigen (Vorgabe 50)."},
-            "regex": {"type": "boolean", "description": "query als regulären Ausdruck lesen."}},
-            "required": ["query"]},
-    },
-    "column_stats": {
-        "fn": tool_column_stats,
-        "description": ("Eine Spalte einer angehängten Tabelle auszählen: wie viele Zeilen gefüllt bzw. "
-                        "leer sind, wie viele verschiedene Werte es gibt und die häufigsten. Damit "
-                        "beantwortest du Mengenfragen über die ganze Datei, ohne sie zu lesen."),
-        "schema": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "Dateiname (Teil genügt); bei nur einem Anhang optional."},
-            "column": {"type": "string", "description": "Spaltenname oder Spaltennummer (1-basiert)."},
-            "top": {"type": "integer", "description": "Wie viele der häufigsten Werte (Vorgabe 30)."}},
-            "required": ["column"]},
-    },
-}
-
-
-def call_local_tool(ctx, name: str, args: dict) -> str:
-    """Ein Werkzeug auf den Anhängen aufrufen; unbekannte Argumente fallen weg, damit ein
-    erfundener Parameter nicht den ganzen Aufruf sprengt."""
-    tool = LOCAL_TOOLS[name]
-    allowed = set(tool["schema"].get("properties", {}))
-    return tool["fn"](ctx, **{k: v for k, v in (args or {}).items() if k in allowed})
-
-
-async def run_turn(backend, model: str, user: str, chat: dict, question: str,
-                   files: list[dict] | None = None):
-    """Async-Generator über SSE-Events; hängt das Ergebnis an den Verlauf des Gesprächs an.
-    Benutzer und Gespräch braucht der Tool-Loop für die Werkzeuge auf den Anhängen."""
+async def run_turn(backend, model: str, user: str, chat: dict, question: str):
+    """Async-Generator über SSE-Events; hängt das Ergebnis an den Verlauf des Gesprächs an."""
     history = chat["messages"]
-    entry: dict = {"role": "user", "content": question}
-    if files:
-        entry["files"] = files
-    history.append(entry)
-    specs = tool_specs(bool(chat_attachments(chat)))
+    history.append({"role": "user", "content": question})
+    specs = tool_specs()
     msgs = backend.history(history)      # die neue Frage ist darin schon enthalten
     log = {"ts": datetime.now().isoformat(timespec="seconds"), "model": f"{backend.name}/{model}",
            "question": question, "calls": [], "ui": "chat"}
-    if files:
-        log["files"] = [{"name": f["name"], "chars": f.get("chars", 0)} for f in files]
     t0 = time.time()
-    answer = ""
+    answer, usage, steps, model_api = "", zero_usage(), 0, ""
     for _ in range(MAX_STEPS):
         end = None
         async for ev in backend.step(model, msgs, specs):
@@ -1194,6 +857,9 @@ async def run_turn(backend, model: str, user: str, chat: dict, question: str,
                 end = ev
             else:
                 yield ev
+        add_usage(usage, end.get("usage"))    # jeder Schritt ist ein eigener Request
+        model_api = end.get("model_used") or model_api
+        steps += 1
         # Anthropic/OpenAI liefern eine Nachricht, die Responses-API eine Liste von Items.
         msgs.extend(end["msg"] if isinstance(end["msg"], list) else [end["msg"]])
         entry = {"role": "assistant", "content": end["text"], "tool_calls": end["calls"]}
@@ -1207,12 +873,9 @@ async def run_turn(backend, model: str, user: str, chat: dict, question: str,
         for c in end["calls"]:
             yield {"type": "tool_call", "name": c["name"], "args": c["args"]}
             try:
-                if c["name"] in LOCAL_TOOLS:      # Werkzeuge auf den Anhängen, ohne MCP
-                    text = call_local_tool((user, chat), c["name"], c["args"])
-                else:
-                    res = await MCP_CLIENT.call_tool(c["name"], c["args"])
-                    text = ("\n".join(getattr(b, "text", "") for b in res.content)
-                            if hasattr(res, "content") else str(res))
+                res = await MCP_CLIENT.call_tool(c["name"], c["args"])
+                text = ("\n".join(getattr(b, "text", "") for b in res.content)
+                        if hasattr(res, "content") else str(res))
             except Exception as e:  # Tool-Fehler zurück ans Modell, nicht abbrechen
                 text = f"FEHLER: {e}"
             text = text[:TOOL_RESULT_LIMIT]
@@ -1225,6 +888,8 @@ async def run_turn(backend, model: str, user: str, chat: dict, question: str,
         answer = "(Abbruch: zu viele Schritte)"
         yield {"type": "token", "text": answer}
     log["answer"], log["seconds"] = answer, round(time.time() - t0, 1)
+    record_usage(user, f"{backend.name}/{model}", chat["id"], usage, steps, log["seconds"],
+                 key_for(user, backend.name)[1], model_api)
     RUNS.mkdir(parents=True, exist_ok=True)
     with open(RUNS / f"{datetime.now():%Y-%m-%d}.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps(log, ensure_ascii=False, default=str) + "\n")
@@ -1245,53 +910,45 @@ app = FastAPI(lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
-# HTTP-Basic-Auth. Aktiv, sobald FACTGRID_CHAT_USER und FACTGRID_CHAT_PASSWORD
-# gesetzt sind - noetig, weil der Dienst hinter dem nginx-proxy-manager
-# oeffentlich steht: jede Frage kostet API-Guthaben, und ueber /api/keys liesse
-# sich sonst der hinterlegte Schluessel ersetzen oder loeschen. Ohne die beiden
-# Variablen (rein lokaler Betrieb) bleibt alles offen wie bisher.
+# Anmeldung über FactGrid (MediaWiki-OAuth 1.0a, Ablauf in chat/mwoauth.py). Aktiv,
+# sobald FACTGRID_OAUTH_KEY und FACTGRID_OAUTH_SECRET gesetzt sind - noetig, weil
+# der Dienst hinter dem nginx-proxy-manager oeffentlich steht: jede Frage kostet
+# API-Guthaben, und ueber /api/keys liesse sich sonst der hinterlegte Schluessel
+# ersetzen oder loeschen. Ohne die beiden Variablen (rein lokaler Betrieb) bleibt
+# alles offen wie bisher.
+#
+# Herein kommt, wer ein FactGrid-Konto hat; gesperrte Konten nicht. Profil
+# (API-Schluessel) und Gespraeche haengen am FactGrid-Benutzernamen - wer dort
+# umbenannt wird, faengt hier neu an.
 # ---------------------------------------------------------------------------
-def _load_users() -> dict[str, str]:
-    """Zugangsdaten aus .env: ein Paar über FACTGRID_CHAT_USER/_PASSWORD, weitere
-    über FACTGRID_CHAT_USERS als "name:passwort,name2:passwort2". Ein Passwort darf
-    ":" enthalten (nur das erste trennt), aber kein Komma."""
-    users: dict[str, str] = {}
-    user = os.environ.get("FACTGRID_CHAT_USER", "").strip()
-    password = os.environ.get("FACTGRID_CHAT_PASSWORD", "")
-    if user and password:
-        users[user] = password
-    for pair in os.environ.get("FACTGRID_CHAT_USERS", "").split(","):
-        name, sep, secret = pair.strip().partition(":")
-        if sep and name.strip() and secret.strip():
-            users[name.strip()] = secret.strip()
-    return users
-
-
-CHAT_USERS = _load_users()
+FACTGRID_BASE = os.environ.get("FACTGRID_BASE", "https://database.factgrid.de/").rstrip("/")
+OAUTH = MwOAuth(
+    key=os.environ.get("FACTGRID_OAUTH_KEY", ""),
+    secret=os.environ.get("FACTGRID_OAUTH_SECRET", ""),
+    index_url=os.environ.get("FACTGRID_OAUTH_URL", "") or f"{FACTGRID_BASE}/w/index.php",
+    # "oob" = die beim Consumer eingetragene Rueckruf-Adresse nehmen; das Wiki haengt
+    # oauth_token und oauth_verifier an und schickt den Browser dorthin. Eine eigene
+    # Adresse nimmt es nur von einem Consumer mit "callback is prefix".
+    callback=os.environ.get("FACTGRID_OAUTH_CALLBACK", "").strip() or "oob",
+)
 
 # ---------------------------------------------------------------------------
-# Anmeldung per Sitzungscookie statt HTTP-Basic: Basic Auth kennt kein Abmelden
-# (der Browser sendet die Zugangsdaten bis zum Schliessen weiter). Die Sitzungen
-# liegen im Speicher - ein Neustart meldet alle ab, was hier vertretbar ist.
+# Sitzungscookie: die Anmeldung beim Wiki gilt hier, bis das Cookie ablaeuft. Die
+# Sitzungen liegen im Speicher - ein Neustart meldet alle ab, was hier vertretbar
+# ist. Der Zugriffs-Token von FactGrid wird nach dem identify nicht aufgehoben:
+# der Chat schreibt nichts im Wiki, er will nur den Namen.
 # ---------------------------------------------------------------------------
 COOKIE = "fg_session"
 SESSION_TTL = int(os.environ.get("FACTGRID_CHAT_SESSION_TTL", str(12 * 3600)))
+LOGIN_TTL = 600                  # so lange darf das Bestaetigen im Wiki dauern
 LOGINS: dict[str, dict] = {}
+PENDING: dict[str, dict] = {}    # Anfrage-Token -> {secret, expires, next}
 # Ohne Anmeldung erreichbar. Dazu gehören die geteilten Gespräche: /s/<token> (die
 # Oberfläche) und /api/shared (der Inhalt) - nur lesend, das Weiterführen unter
 # /api/shared/continue verlangt wie alles andere eine Anmeldung.
-OPEN_PATHS = {"/", "/api/login", "/api/me", "/favicon.ico", "/api/shared", "/api/shared/attachment"}
+OPEN_PATHS = {"/", "/api/oauth/login", "/api/oauth/callback", "/api/me", "/favicon.ico",
+              "/api/shared"}
 OPEN_PREFIXES = ("/s/",)
-
-
-def _check_login(user: str, password: str) -> bool:
-    ok = False
-    # Immer alle Eintraege durchlaufen und compare_digest auf beiden Feldern:
-    # kein vorzeitiger Ausstieg, der ueber die Laufzeit verraet, ob es den
-    # Namen gibt.
-    for name, secret in CHAT_USERS.items():
-        ok |= secrets.compare_digest(user, name) & secrets.compare_digest(password, secret)
-    return bool(ok)
 
 
 def _current_user(request: Request) -> str | None:
@@ -1312,7 +969,7 @@ def _is_https(request: Request) -> bool:
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
-    if not CHAT_USERS:            # ohne konfigurierte Benutzer bleibt alles offen
+    if not OAUTH.enabled:         # ohne eingerichtetes OAuth bleibt alles offen
         return await call_next(request)
     if request.url.path in OPEN_PATHS or request.url.path.startswith(OPEN_PREFIXES):
         return await call_next(request)
@@ -1327,32 +984,79 @@ def _any_key(user: str) -> bool:
 
 @app.get("/api/me")
 async def me(request: Request):
-    limits = {"upload_max": UPLOAD_MAX, "upload_preview": UPLOAD_PREVIEW}
-    if not CHAT_USERS:
-        return {"auth": False, "user": None, "has_key": _any_key("_offen"), "model": CHAT_MODEL, **limits}
+    if not OAUTH.enabled:
+        return {"auth": False, "user": None, "has_key": _any_key("_offen"), "model": CHAT_MODEL}
     user = _current_user(request)
     if user is None:
-        return {"auth": True, "user": None, **limits}
-    return {"auth": True, "user": user, "has_key": _any_key(user), "model": CHAT_MODEL, **limits}
+        return {"auth": True, "user": None, "wiki": OAUTH.wiki}
+    return {"auth": True, "user": user, "wiki": OAUTH.wiki, "has_key": _any_key(user),
+            "model": CHAT_MODEL}
 
 
-@app.post("/api/login")
-async def login(request: Request):
-    body = await request.json()
-    user = str(body.get("user") or "").strip()
-    password = str(body.get("password") or "")
-    if not _check_login(user, password):
-        return JSONResponse({"error": "Benutzername oder Passwort falsch."}, status_code=401)
-    token = secrets.token_urlsafe(32)
-    LOGINS[token] = {"user": user, "expires": time.time() + SESSION_TTL}
-    res = JSONResponse({"ok": True, "user": user, "has_key": _any_key(user), "model": CHAT_MODEL})
-    res.set_cookie(COOKIE, token, max_age=SESSION_TTL, httponly=True,
+def _safe_next(target: str) -> str:
+    """Nur Pfade auf diesem Server - sonst waere /api/oauth/login eine Weiterleitung
+    auf beliebige fremde Adressen."""
+    return target if re.match(r"^/(?!/)[^\\]*$", target or "") else "/"
+
+
+def _login_error(message: str):
+    """Zurueck zur Oberflaeche, die die Meldung im Anmeldedialog zeigt."""
+    return RedirectResponse("/?fehler=" + quote(message[:300]), status_code=303)
+
+
+def _drop_stale() -> None:
+    now = time.time()
+    for token in [t for t, e in PENDING.items() if e["expires"] < now]:
+        PENDING.pop(token, None)
+
+
+@app.get("/api/oauth/login")
+async def oauth_login(request: Request):
+    """Schritt 1: Anfrage-Token holen und den Browser zur Bestaetigung ins Wiki schicken."""
+    if not OAUTH.enabled:
+        return JSONResponse({"error": "FactGrid-Anmeldung ist nicht eingerichtet."}, status_code=503)
+    try:
+        token, secret = await OAUTH.initiate()
+    except OAuthError as e:
+        return _login_error(str(e))
+    _drop_stale()
+    PENDING[token] = {"secret": secret, "expires": time.time() + LOGIN_TTL,
+                      "next": _safe_next(request.query_params.get("next", "/"))}
+    return RedirectResponse(OAUTH.authorize_url(token), status_code=303)
+
+
+@app.get("/api/oauth/callback")
+async def oauth_callback(request: Request):
+    """Schritt 2: Verifier gegen den Zugriffs-Token tauschen, Identitaet pruefen, anmelden."""
+    _drop_stale()
+    entry = PENDING.pop(request.query_params.get("oauth_token", ""), None)
+    if entry is None:
+        return _login_error("Die Anmeldung ist abgelaufen oder gehoert nicht hierher - bitte noch einmal.")
+    verifier = request.query_params.get("oauth_verifier", "")
+    if not verifier:
+        return _login_error("Die Anmeldung wurde in FactGrid abgebrochen.")
+    try:
+        token, secret = await OAUTH.access_token(request.query_params["oauth_token"],
+                                                 entry["secret"], verifier)
+        claims = await OAUTH.identify(token, secret)
+    except OAuthError as e:
+        return _login_error(str(e))
+    user = str(claims.get("username") or "").strip()
+    if not user:
+        return _login_error(f"{OAUTH.wiki} hat keinen Benutzernamen geliefert.")
+    if claims.get("blocked"):
+        return _login_error(f"Das FactGrid-Konto {user} ist gesperrt.")
+    session = secrets.token_urlsafe(32)
+    LOGINS[session] = {"user": user, "expires": time.time() + SESSION_TTL}
+    res = RedirectResponse(entry["next"], status_code=303)
+    res.set_cookie(COOKIE, session, max_age=SESSION_TTL, httponly=True,
                    samesite="lax", secure=_is_https(request), path="/")
     return res
 
 
 @app.post("/api/logout")
 async def logout(request: Request):
+    """Nur hier abmelden - die Anmeldung im Wiki selbst bleibt davon unberuehrt."""
     LOGINS.pop(request.cookies.get(COOKIE, ""), None)
     res = JSONResponse({"ok": True})
     res.delete_cookie(COOKIE, path="/")
@@ -1367,7 +1071,7 @@ async def index():
 @app.get("/api/models")
 async def models(request: Request):
     """Nur die freigeschalteten Modelle (FACTGRID_CHAT_MODELS), je mit Schlüsselstatus."""
-    user = (_current_user(request) if CHAT_USERS else "_offen") or ""
+    user = (_current_user(request) if OAUTH.enabled else "_offen") or ""
     infos = model_info(user) if user else [dict(m, has_key=False, key_source="") for m in model_info("")]
     return {"models": infos, "default": CHAT_MODEL,
             "has_key": any(m["has_key"] for m in infos), "errors": {}}
@@ -1394,7 +1098,7 @@ async def info():
 
 def _chat_user(request: Request) -> str:
     """Besitzer der Gespräche: der angemeldete Benutzer, ohne Anmeldung ein gemeinsames Konto."""
-    return (_current_user(request) or "") if CHAT_USERS else "_offen"
+    return (_current_user(request) or "") if OAUTH.enabled else "_offen"
 
 
 @app.get("/api/chats")
@@ -1448,35 +1152,6 @@ async def shared_history(token: str = ""):
                          for m in chat.get("messages", [])]}
 
 
-def _send_attachment(user: str, chat: dict, file_id: str):
-    """Die Textdatei eines Anhangs zum Herunterladen; nur Anhänge, die wirklich zu diesem
-    Gespräch gehören (die ID muss im Verlauf stehen)."""
-    f = next((x for x in chat_attachments(chat) if x.get("id") == file_id), None)
-    path = attachment_file(user, chat["id"], file_id) if f else None
-    if path is None:
-        return JSONResponse({"error": "Diesen Anhang gibt es nicht (mehr)."}, status_code=404)
-    return FileResponse(path, media_type="text/plain; charset=utf-8", filename=f["name"])
-
-
-@app.get("/api/attachment")
-async def attachment(request: Request, session: str = "", file: str = ""):
-    """Anhang eines eigenen Gesprächs herunterladen (die Oberfläche hängt ihn an den Chip)."""
-    user = _chat_user(request)
-    chat = get_chat(user, session)
-    if chat is None:
-        return JSONResponse({"error": "Dieses Gespräch gibt es nicht."}, status_code=404)
-    return _send_attachment(user, chat, file)
-
-
-@app.get("/api/shared/attachment")
-async def shared_attachment(token: str = "", file: str = ""):
-    """Anhang eines geteilten Gesprächs – wer den Link hat, liest das Gespräch mit seinen Dateien."""
-    hit = shared_chat(token)
-    if hit is None:
-        return JSONResponse({"error": "Dieser Link führt zu keinem Gespräch (mehr)."}, status_code=404)
-    return _send_attachment(hit[0], hit[1], file)
-
-
 @app.post("/api/shared/continue")
 async def continue_shared(request: Request):
     """Geteiltes Gespräch als eigenes weiterführen: Kopie mit neuer ID und neuem Link. Das
@@ -1491,9 +1166,6 @@ async def continue_shared(request: Request):
             "updated": _now(), "model": src.get("model", ""), "source": src.get("share", ""),
             "messages": copy.deepcopy(src.get("messages", []))}
     CHATS[(_owner(user), chat["id"])] = chat
-    src_files, dst_files = _files_dir(hit[0], src["id"]), _files_dir(user, chat["id"])
-    if src_files is not None and dst_files is not None and src_files.is_dir():
-        shutil.copytree(src_files, dst_files, dirs_exist_ok=True)   # eigene Anhänge, eigenes Löschen
     save_chat(user, chat)                    # schreibt die Datei und legt das eigene Token an
     return {"ok": True, "session": chat["id"], "share": chat.get("share", "")}
 
@@ -1503,42 +1175,12 @@ async def remove_chat(request: Request, chat_id: str):
     return {"ok": True, "deleted": delete_chat(_chat_user(request), chat_id)}
 
 
-@app.post("/api/upload")
-async def upload(request: Request, name: str = "", part: str = ""):
-    """Datei-Anhang für die nächste Frage. Der Datei-Inhalt IST der Request-Body (kein
-    multipart - das spart eine Abhängigkeit und eine Parser-Angriffsfläche), der Dateiname
-    steht in der Query. Zurück kommt der Steckbrief mit der ID, die /api/chat im Feld
-    "files" erwartet. Der Anhang gehört dem hochladenden Benutzer; ein anderer kann mit
-    der ID nichts anfangen (sie zeigt nur in seinen eigenen Ordner)."""
-    user = _chat_user(request)
-    if not user:
-        return JSONResponse({"error": "Nicht angemeldet."}, status_code=401)
-    limit_mb = max(1, UPLOAD_MAX // (1024 * 1024))
-    if int(request.headers.get("content-length") or 0) > UPLOAD_MAX:
-        return JSONResponse({"error": f"Die Datei ist zu groß (höchstens {limit_mb} MB)."}, status_code=413)
-    data = await request.body()
-    if not data:
-        return JSONResponse({"error": "Die Datei ist leer."}, status_code=400)
-    if len(data) > UPLOAD_MAX:
-        return JSONResponse({"error": f"Die Datei ist zu groß (höchstens {limit_mb} MB)."}, status_code=413)
-    text, why = extract_text(name, data)
-    if why:
-        return JSONResponse({"error": why}, status_code=415)
-    # part=1: die Oberfläche hat eine zu große Datei am letzten Zeilenumbruch abgeschnitten
-    # und nur den Anfang geschickt - das Modell erfährt es über attachment_text().
-    return save_upload(user, name, len(data), text, part=part == "1")
-
-
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()
     question = (body.get("message") or "").strip()
     user = _chat_user(request)
-    ids = [str(i) for i in (body.get("files") or [])][:UPLOAD_MAX_FILES]
     conv = get_chat(user, body.get("session") or "", create=True)
-    # Anhänge dieses Benutzers (IDs aus /api/upload) in das Gespräch übernehmen;
-    # unbekannte (abgelaufene) fallen weg und werden unten gemeldet.
-    files = [f for f in (attach_upload(user, conv["id"], i) for i in ids) if f] if conv else []
     # Nur freigeschaltete Modelle; alles andere fällt auf die Vorauswahl zurück.
     model = str(body.get("model") or "").strip()
     if model not in CHAT_MODELS:
@@ -1547,12 +1189,9 @@ async def chat(request: Request):
     backend, why = backend_for(user, provider)
 
     async def sse():
-        if not question and not files:
+        if not question:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Keine Frage übergeben.'})}\n\n"
             return
-        if len(files) < len(ids):
-            missing = {'type': 'error', 'message': 'Ein Anhang war nicht mehr da (zu alt?) und fehlt in der Frage.'}
-            yield f"data: {json.dumps(missing, ensure_ascii=False)}\n\n"
         if conv is None:
             yield f"data: {json.dumps({'type': 'error', 'message': 'Ungültige Gesprächs-ID.'})}\n\n"
             return
@@ -1561,7 +1200,7 @@ async def chat(request: Request):
             return
         conv["model"] = model
         try:
-            async for ev in run_turn(backend, model_id, user, conv, question, files):
+            async for ev in run_turn(backend, model_id, user, conv, question):
                 yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]})}\n\n"
@@ -1580,7 +1219,7 @@ def _provider_arg(value) -> str | None:
 
 @app.get("/api/keys")
 async def get_keys(request: Request, provider: str = ""):
-    user = _current_user(request) if CHAT_USERS else "_offen"
+    user = _current_user(request) if OAUTH.enabled else "_offen"
     p = _provider_arg(provider)
     if p is None:
         return JSONResponse({"error": "Unbekannter Anbieter."}, status_code=400)
@@ -1591,7 +1230,7 @@ async def get_keys(request: Request, provider: str = ""):
 
 @app.post("/api/keys")
 async def set_key(request: Request):
-    user = _current_user(request) if CHAT_USERS else "_offen"
+    user = _current_user(request) if OAUTH.enabled else "_offen"
     body = await request.json()
     p = _provider_arg(body.get("provider"))
     if p is None:
@@ -1615,7 +1254,7 @@ async def set_key(request: Request):
 
 @app.delete("/api/keys")
 async def delete_key(request: Request, provider: str = ""):
-    user = _current_user(request) if CHAT_USERS else "_offen"
+    user = _current_user(request) if OAUTH.enabled else "_offen"
     p = _provider_arg(provider)
     if p is None:
         return JSONResponse({"error": "Unbekannter Anbieter."}, status_code=400)
@@ -1628,8 +1267,23 @@ def main() -> None:
     import uvicorn
     host = os.environ.get("FACTGRID_CHAT_HOST", "127.0.0.1")
     port = int(os.environ.get("FACTGRID_CHAT_PORT", "8177"))
+    # Ohne eingerichtetes OAuth ist der Chat offen. Am Arbeitsplatz ist das gewollt; auf einer
+    # Adresse, die andere erreichen, waere es ein offenes Scheunentor (jede Frage kostet
+    # API-Guthaben) - dann lieber gar nicht erst starten.
+    if OAUTH.enabled and OAUTH.callback != "oob" \
+            and not OAUTH.callback.startswith(("http://", "https://")):
+        sys.exit(f"FACTGRID_OAUTH_CALLBACK={OAUTH.callback!r} ist keine vollstaendige Adresse. "
+                 f"Leer lassen (dann gilt die beim Consumer eingetragene Rueckruf-Adresse) oder "
+                 f"die volle https-Adresse eintragen - letzteres nur, wenn der Consumer mit "
+                 f"'callback is prefix' angelegt wurde.")
+    if not OAUTH.enabled and host not in ("127.0.0.1", "::1", "localhost"):
+        sys.exit(f"FACTGRID_CHAT_HOST={host} ist auch von aussen erreichbar, aber die "
+                 f"FactGrid-Anmeldung ist nicht eingerichtet. Entweder FACTGRID_OAUTH_KEY und "
+                 f"FACTGRID_OAUTH_SECRET in .env setzen (Consumer anlegen unter "
+                 f"{FACTGRID_BASE}/wiki/Special:OAuthConsumerRegistration/propose) oder "
+                 f"FACTGRID_CHAT_HOST=127.0.0.1 setzen.")
     print(f"FactGrid-Chat: http://{host}:{port}  (Modelle: {', '.join(CHAT_MODELS)}, Vorauswahl: {CHAT_MODEL}, "
-          f"Benutzer: {', '.join(CHAT_USERS) or 'KEINE - offen!'})")
+          f"Anmeldung: {'FactGrid-OAuth über ' + OAUTH.wiki if OAUTH.enabled else 'KEINE - offen!'})")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 

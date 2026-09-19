@@ -8,6 +8,7 @@
 #   make refresh    fetch + convert + index + Neustart (täglich 02:00 per ops/factgrid-refresh.timer)
 #   make mcp        MCP-Server im HTTP-Modus (für Open WebUI); Claude Code nutzt .mcp.json (stdio)
 #   make chat       Web-Chatbot mit Modellauswahl (Anthropic/OpenAI) auf Port 8177
+#   make usage      Token-Verbrauch des Web-Chats je Benutzer (ARGS="--by user+model --since 2026-09")
 #   make test       Unit-/Integrationstests ohne QLever (rdflib-Mock)
 #   make smoke      Referenzabfragen gegen den laufenden QLever
 #   make agent      Plan B: leichtgewichtiger Agent auf der Kommandozeile (OpenRouter/Anthropic)
@@ -31,7 +32,7 @@ QLEVER     ?= qlever        # pipx install qlever
 # harte Grenze des QLever-Containers (Host hat 15 GB)
 CONTAINER_MEMORY ?= 11g
 
-.PHONY: fetch convert index start stop status ui refresh mcp chat test smoke agent briefing \
+.PHONY: fetch convert index start stop status ui refresh mcp chat usage test smoke agent briefing \
         briefing-send mwdb mwdb-list clean
 
 fetch:
@@ -93,12 +94,19 @@ mcp:
 chat:
 	cd mcp && uv sync --all-extras >/dev/null && uv run --all-extras python ../chat/server.py
 
+# Wer hat wie viele Tokens verbraucht (.chat-usage.jsonl). ARGS geht durch:
+#   make usage ARGS="--by user+model --since 2026-09"
+usage:
+	$(PY) scripts/chat_usage.py $(ARGS)
+
 test:
 	cd mcp && uv sync --all-extras >/dev/null
 	cd mcp && uv run --all-extras python ../tests/test_wb2rdf.py
 	cd mcp && uv run --all-extras python ../tests/test_mcp.py
 	cd mcp && uv run --all-extras python ../tests/test_mwdb.py
 	cd mcp && uv run --all-extras python ../tests/test_chat_backends.py
+	cd mcp && uv run --all-extras python ../tests/test_oauth.py
+	cd mcp && uv run --all-extras python ../tests/test_usage.py
 	cd mcp && uv run --all-extras python ../tests/test_briefing.py
 
 smoke:
