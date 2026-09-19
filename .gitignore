@@ -17,8 +17,8 @@ mcp/uv.lock
 .chat-profiles.json
 # Gespeicherte Gespraeche des Web-Chats (Seitenleiste)
 .chat-history/
-# Hochgeladene Anhaenge, bis sie mit einer Frage im Gespraech landen
-.chat-uploads/
 
 # Lokaler OpenAI-Schluessel (nie einchecken)
 .openai_key
+# Buchhaltung des Web-Chats (wer wie viele Tokens verbraucht hat)
+.chat-usage.jsonl
