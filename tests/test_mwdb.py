@@ -208,6 +208,43 @@ def test_dump_date_and_env_helpers():
 # --------------------------------------------------------------------------- #
 # Hilfsfunktionen in mwdb (ohne Datenbank)
 # --------------------------------------------------------------------------- #
+def test_prune_dumps():
+    with tempfile.TemporaryDirectory() as d:
+        ddir = Path(d)
+        names = ["monthly_2026-07-01.sql.gz", "monthly_2026-08-01.sql.gz", "monthly_2026-09-01.sql.gz",
+                 "daily_2026-09-11.sql.gz", "daily_2026-09-12.sql.gz"]
+        for i, n in enumerate(names):  # mtime steigt mit i
+            f = ddir / n
+            f.write_bytes(b"x" * (i + 1))
+            os.utime(f, (1_800_000_000 + i * 3600, 1_800_000_000 + i * 3600))
+        (ddir / "notiz.txt").write_text("bleibt")
+        loaded = ddir / "daily_2026-09-11.sql.gz"
+
+        # keep=0: nichts löschen
+        assert mw_load.prune_dumps(loaded, ddir, 0) == []
+        assert sorted(p.name for p in ddir.glob("*.sql.gz")) == sorted(names)
+        # Dump außerhalb des Verzeichnisses: nichts anfassen
+        with tempfile.TemporaryDirectory() as other:
+            ext = Path(other) / "fremd.sql.gz"
+            ext.write_bytes(b"y")
+            assert mw_load.prune_dumps(ext, ddir, 1) == []
+        assert len(list(ddir.glob("*.sql.gz"))) == 5
+        # keep=2: die zwei neuesten bleiben, der geladene sowieso
+        removed = mw_load.prune_dumps(loaded, ddir, 2)
+        assert sorted(p.name for p in removed) == ["monthly_2026-07-01.sql.gz", "monthly_2026-08-01.sql.gz",
+                                                   "monthly_2026-09-01.sql.gz"], removed
+        # keep=1: nur der neueste – der geladene ist älter, bleibt aber trotzdem; Neueres bleibt
+        removed = mw_load.prune_dumps(loaded, ddir, 1)
+        assert removed == [], removed
+        assert sorted(p.name for p in ddir.glob("*.sql.gz")) == ["daily_2026-09-11.sql.gz", "daily_2026-09-12.sql.gz"]
+        # keep=1 mit dem neuesten als geladenem Dump: alles Ältere weg
+        newest = ddir / "daily_2026-09-12.sql.gz"
+        removed = mw_load.prune_dumps(newest, ddir, 1)
+        assert [p.name for p in removed] == ["daily_2026-09-11.sql.gz"], removed
+        assert [p.name for p in ddir.glob("*.sql.gz")] == ["daily_2026-09-12.sql.gz"]
+        assert (ddir / "notiz.txt").exists()
+
+
 def test_mwdb_dates_and_titles():
     mwdb._ID_NS.update({"Q": 120, "P": 122})  # Namensräume ohne DB festlegen
     assert mwdb.ts_to_iso("20180112134423") == "2018-01-12 13:44:23"

@@ -12,7 +12,8 @@ Seite bearbeitet, Logbuch, Benutzerkonten ohne Geheimnisse, Wikibase-Terme).
 Ablauf: pigz -dc dump | (Filter: nur erlaubte Tabellen, ENGINE=Aria) | mariadb <db>_new
 → Bereinigung (user-Spalten, unterdrückte Einträge, Kommentare gelöschter Seiten)
 → Meta-Tabelle → atomarer Tausch nach <db> → Views → Lesebenutzer (SELECT-only), dessen
-Passwort in .env (MW_DB_PASSWORD) steht bzw. dort eingetragen wird.
+Passwort in .env (MW_DB_PASSWORD) steht bzw. dort eingetragen wird → Aufräumen: ältere *.sql.gz
+im Dump-Verzeichnis werden gelöscht, nur der neueste bleibt (--keep N behält N, --keep 0 alle).
 
 Nicht geladen werden Tabellen mit privaten Daten (user_password/E-Mail, account_*,
 oauth_*, bot_passwords, watchlist, user_properties, recentchanges mit IPs, archive =
@@ -381,6 +382,33 @@ def grant(admin: Admin, db: str, user: str, env: Path) -> None:
     log(f"  Lesebenutzer {user}: SELECT auf {db}.* (localhost, 127.0.0.1)")
 
 
+def prune_dumps(dump: Path, dump_dir: Path, keep: int) -> list[Path]:
+    """Nach erfolgreichem Laden ältere *.sql.gz im Dump-Verzeichnis löschen. Die `keep` neuesten
+    (nach mtime, wie find_dump) bleiben; der gerade geladene Dump und alles Neuere bleiben immer.
+    keep < 1: nichts löschen. Liegt der Dump nicht im Verzeichnis, wird nichts angefasst."""
+    if keep < 1:
+        return []
+    dump, dump_dir = dump.resolve(), dump_dir.resolve()
+    if dump.parent != dump_dir:
+        log(f"  Aufräumen übersprungen: {dump.name} liegt nicht in {dump_dir}")
+        return []
+    key = lambda p: (p.stat().st_mtime, p.name)  # noqa: E731
+    files = sorted(dump_dir.glob("*.sql.gz"), key=key, reverse=True)
+    removed: list[Path] = []
+    freed = 0
+    for p in files[keep:]:
+        if p.resolve() == dump or key(p) >= key(dump):
+            continue
+        freed += p.stat().st_size
+        p.unlink()
+        removed.append(p)
+    if removed:
+        log("  Aufgeräumt: " + ", ".join(p.name for p in removed) + f" ({freed / 1e9:.1f} GB frei)")
+    else:
+        log("  Aufräumen: nichts zu löschen")
+    return removed
+
+
 def summary(admin: Admin, db: str) -> None:
     rows = admin.rows(
         f"SELECT TABLE_NAME, TABLE_ROWS, ROUND((DATA_LENGTH+INDEX_LENGTH)/1048576) FROM information_schema.TABLES "
@@ -405,6 +433,9 @@ def main() -> None:
     ap.add_argument("--list", action="store_true", help="nur Tabellen und Größen anzeigen, nichts laden")
     ap.add_argument("--force", action="store_true", help="auch laden, wenn dieser Dump schon geladen ist")
     ap.add_argument("--no-swap", action="store_true", help="in <db>_new belassen (zum Prüfen)")
+    ap.add_argument("--keep", type=int, default=int(os.environ.get("MW_KEEP", "1")),
+                    help="nach erfolgreichem Laden so viele *.sql.gz im Dump-Verzeichnis behalten "
+                         "(neueste zuerst; Default 1, 0 = nichts löschen)")
     a = ap.parse_args()
 
     dump = find_dump(a.dump, a.dump_dir)
@@ -434,26 +465,28 @@ def main() -> None:
 
     staging = f"{a.db}_new"
     t0 = time.time()
-    log(f"1/6 Staging-Datenbank {staging} anlegen")
+    log(f"1/7 Staging-Datenbank {staging} anlegen")
     admin.run(f"DROP DATABASE IF EXISTS `{staging}`; CREATE DATABASE `{staging}` CHARACTER SET binary")
-    log(f"2/6 Dump laden ({len(include)} Tabellen, ENGINE={a.engine.split()[0]})")
+    log(f"2/7 Dump laden ({len(include)} Tabellen, ENGINE={a.engine.split()[0]})")
     sizes = load(admin, dump, staging, include, a.engine)
     missing = sorted(t for t in include if t not in sizes)
     if missing:
         log("  nicht im Dump enthalten: " + ", ".join(missing))
-    log("3/6 Bereinigen")
+    log("3/7 Bereinigen")
     curate(admin, staging)
     write_meta(admin, staging, dump, sizes, include, a.with_text)
     if a.no_swap:
         log(f"Fertig (ohne Tausch): Daten liegen in {staging}")
         return
-    log(f"4/6 Nach {a.db} tauschen")
+    log(f"4/7 Nach {a.db} tauschen")
     swap(admin, staging, a.db)
-    log("5/6 Views")
+    log("5/7 Views")
     create_views(admin, a.db)
-    log("6/6 Lesebenutzer")
+    log("6/7 Lesebenutzer")
     grant(admin, a.db, a.user, Path(a.env))
     summary(admin, a.db)
+    log("7/7 Aufräumen")
+    prune_dumps(dump, Path(a.dump_dir), a.keep)
     log(f"Fertig in {(time.time() - t0) / 60:.1f} min – Dump vom {dump_date(dump)} in {a.db}")
 
 

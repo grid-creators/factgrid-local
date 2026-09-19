@@ -5,7 +5,7 @@
 #   make index      QLever-Index bauen (im Verzeichnis qlever/)
 #   make start      QLever-Server starten (Port 7003)
 #   make ui         QLever-UI starten (Port 8176) – trägt vorher die FactGrid-Prefixe ein
-#   make refresh    fetch + convert + index + Neustart (z. B. wöchentlich per systemd-timer/cron)
+#   make refresh    fetch + convert + index + Neustart (täglich 02:00 per ops/factgrid-refresh.timer)
 #   make mcp        MCP-Server im HTTP-Modus (für Open WebUI); Claude Code nutzt .mcp.json (stdio)
 #   make chat       Web-Chatbot mit Modellauswahl (Anthropic/OpenAI) auf Port 8177
 #   make test       Unit-/Integrationstests ohne QLever (rdflib-Mock)
@@ -120,10 +120,12 @@ briefing-send:
 # MediaWiki-Datenbank: neuester *.sql.gz aus MW_DUMP_DIR (.env, Default /srv/data/factgrid/mediawiki)
 # → MariaDB-Datenbank factgrid_mw, nur öffentliche Tabellen (README 3.7). Ein bereits geladener
 # Dump wird übersprungen (MW_FORCE=1 erzwingt), MW_DUMP=pfad lädt eine bestimmte Datei,
-# MW_TEXT=1 nimmt die Seiteninhalte mit (≈ 160 GB, Stunden). Der Schema-Cache wird geleert.
+# MW_TEXT=1 nimmt die Seiteninhalte mit (≈ 160 GB, Stunden). Nach erfolgreichem Laden werden
+# ältere *.sql.gz im Dump-Verzeichnis gelöscht, nur der neueste bleibt (MW_KEEP=n behält n, 0 alle).
+# Der Schema-Cache wird geleert.
 mwdb:
 	$(PY) scripts/mw_load.py --env .env $(if $(MW_DUMP),--dump $(MW_DUMP)) \
-	  $(if $(MW_FORCE),--force) $(if $(MW_TEXT),--with-text)
+	  $(if $(MW_FORCE),--force) $(if $(MW_TEXT),--with-text) $(if $(MW_KEEP),--keep $(MW_KEEP))
 	rm -f ~/.cache/factgrid-mcp/*.txt
 	@echo "Hinweis: laufende Dienste (factgrid-chat) sehen die neuen Tools erst nach einem Neustart."
 

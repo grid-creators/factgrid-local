@@ -5,7 +5,7 @@
 Description=Täglich prüfen, ob ein neuer MediaWiki-SQL-Dump zu laden ist
 
 [Timer]
-OnCalendar=*-*-* 04:30
+OnCalendar=*-*-* 06:00
 Persistent=true
 RandomizedDelaySec=15min
 
