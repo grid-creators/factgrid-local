@@ -2,9 +2,9 @@
 """
 weekly_briefing.py – wöchentliches Briefing über die Arbeit in FactGrid, auf Englisch.
 
-Montags 08:00 UTC (ops/factgrid-briefing.timer): die Zahlen der vergangenen Woche (Montag bis
-Sonntag, UTC) aus dem lokalen MediaWiki-Spiegel holen, von einem Sprachmodell formulieren
-lassen und als Mail an die Liste schicken.
+Freitags 08:00 Ortszeit (ops/factgrid-briefing.timer): die Zahlen der vergangenen Woche
+(Freitag bis Donnerstag, UTC) aus dem lokalen MediaWiki-Spiegel holen, von einem Sprachmodell
+formulieren lassen und als Mail an die Liste schicken.
 
     make briefing                 # Probelauf: Briefing auf die Konsole, nichts geht raus
     make briefing-send            # wirklich verschicken (sonst macht das der Timer)
@@ -64,14 +64,17 @@ PREAMBLE = (
 
 
 # --------------------------------------------------------------------------- #
-# Zeitraum: die letzte abgeschlossene Woche, Montag 00:00 bis Montag 00:00 (UTC)
+# Zeitraum: die letzte abgeschlossene Woche, Freitag 00:00 bis Freitag 00:00 (UTC)
 # --------------------------------------------------------------------------- #
 def week_range(now: datetime | None = None, weeks_back: int = 1) -> tuple[datetime, datetime]:
-    """(Beginn, Ende) der Berichtswoche. weeks_back=1 ist die letzte abgeschlossene Woche –
-    läuft der Timer Montag früh, ist das genau die Woche davor."""
+    """(Beginn, Ende) der Berichtswoche: Freitag bis Donnerstag. weeks_back=1 ist die letzte
+    abgeschlossene Woche – läuft der Timer Freitag früh, endet sie am Donnerstag davor, also
+    genau dort, wo der MediaWiki-Spiegel vom selben Morgen aufhört."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    monday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
-    end = monday - timedelta(days=7 * (weeks_back - 1))
+    # (weekday() - 4) % 7 = Tage seit dem letzten Freitag; freitags selbst ist das 0.
+    friday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+        days=(now.weekday() - 4) % 7)
+    end = friday - timedelta(days=7 * (weeks_back - 1))
     return end - timedelta(days=7), end
 
 
@@ -227,7 +230,7 @@ def facts(data: dict) -> str:
         return f"{n:,}"
 
     lines = [f"PERIOD: {pretty_day(data['start'])} 00:00 UTC to "
-             f"{pretty_day(data['end'] - timedelta(days=1))} 24:00 UTC (7 days, Monday to Sunday).",
+             f"{pretty_day(data['end'] - timedelta(days=1))} 24:00 UTC (7 days, Friday to Thursday).",
              f"SOURCE: local mirror of the FactGrid MediaWiki database, dump of "
              f"{data['mirror_dump']}, loaded {data['mirror_loaded']}.", ""]
     if data.get("gap"):

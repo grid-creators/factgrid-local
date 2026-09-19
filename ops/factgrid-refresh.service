@@ -1,10 +1,19 @@
-# ~/.config/systemd/user/factgrid-refresh.service  (systemctl --user enable --now factgrid-refresh.timer)
+# /etc/systemd/system/factgrid-refresh.service  (systemctl enable --now factgrid-refresh.timer)
+# Holt den neuesten FactGrid-JSON-Dump, konvertiert ihn nach Turtle, baut den QLever-Index neu
+# und startet den QLever-Server (make refresh, ≈ 15 min). Während des Index-Baus (≈ 7 min) ist
+# der QLever-Server gestoppt; der Chat beantwortet in der Zeit keine Inhaltsfragen.
 [Unit]
-Description=FactGrid-Spiegel aktualisieren (Dump, Konvertierung, QLever-Index)
+Description=FactGrid lokal - QLever-Spiegel aktualisieren (Dump, Konvertierung, Index, Neustart)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/factgrid-local
+WorkingDirectory=/srv/apps/factgrid_local
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/bin/make refresh
+TimeoutStartSec=3h
 Nice=10
 IOSchedulingClass=idle

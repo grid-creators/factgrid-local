@@ -252,6 +252,8 @@ gegenprüfen lässt. Die Kopfzeile zeigt den Datenstand des Spiegels (`/api/info
 eine laufende Antwort lässt sich abbrechen, und wenn kein Anbieter konfiguriert ist, sagt ein
 Banner welcher Schlüssel fehlt statt eines leeren Dropdowns.
 Die **Seitenleiste** listet alle bisherigen Gespräche des angemeldeten Benutzers (Titel = erste Frage,
+Antworten werden als Markdown-Teilmenge gerendert (Überschriften, Listen, Zitate, Trennlinien, Codeblöcke,
+Inline-Code, Fett/Kursiv, Links, GFM-Tabellen);
 zuletzt benutzte zuerst); ein Klick öffnet eines, „+ Neues Gespräch“ beginnt ein leeres, das × am Eintrag
 löscht es nach einer Rückfrage. Die Gespräche liegen auf dem Server unter `.chat-history/<benutzer>/<id>.json`
 (`FACTGRID_CHAT_HISTORY`) und überstehen damit Neuladen wie Neustart; die Datei entsteht mit der ersten
@@ -378,7 +380,10 @@ Lesebenutzer `factgrid_ro` bekommt `SELECT` auf `factgrid_mw.*` – sein Passwor
 ersten Lauf und trägt es als `MW_DB_PASSWORD` in `.env` ein (Modus 600). Der laufende Chat-Dienst merkt
 vom Tausch nichts, weil jede Abfrage eine eigene Verbindung öffnet; nur der Schema-Cache wird geleert.
 Ein bereits geladener Dump wird übersprungen (`MW_FORCE=1` erzwingt), `make mwdb-list` zeigt die
-Tabellen mit Größen, `ops/factgrid-mwdb.timer` ist eine tägliche Prüfung auf neue Dumps.
+Tabellen mit Größen, `ops/factgrid-mwdb.timer` ist eine tägliche Prüfung auf neue Dumps (06:00).
+Nach erfolgreichem Laden räumt der Loader das Dump-Verzeichnis auf: ältere `*.sql.gz` werden
+gelöscht, nur der neueste bleibt (`MW_KEEP=n` behält n, `MW_KEEP=0` alle; bei `--no-swap` oder
+einem bereits geladenen Dump wird nichts gelöscht).
 
 **Tools.** `edit_history(page=…, user=…, since=…, until=…, namespace=…)` beantwortet die
 Kernfrage direkt: für eine Seite (Q-ID, P-ID oder Titel wie `FactGrid:Directory of Properties`) alle
@@ -400,17 +405,13 @@ selbst, bereits gesetzte Variablen (etwa aus `.mcp.json`) gewinnen.
 Tests: `tests/test_mwdb.py` prüft Filter, Bereinigung, Tausch, Views und Rechte an einem synthetischen
 Mini-Dump in `factgrid_mw_test` (wird wieder gelöscht) und lässt die drei Tools darauf laufen.
 
-## 4. Schnellstart
-
-Voraussetzungen: Python ≥ 3.10, `uv` (oder `pipx`), `pigz` (optional), Docker oder das native QLever-Paket,
-ein OpenRouter-Schlüssel (oder ein Anthropic-Schlüssel bzw. `ant auth login`).
-
 ### 3.8 Wochenbriefing an die Liste – `scripts/weekly_briefing.py`
 
-Montags 08:00 UTC schickt `ops/factgrid-briefing.timer` ein Briefing über die vergangene Woche
-(Montag bis Sonntag, UTC) an `BRIEFING_TO` – eingerichtet ist die Community-Liste
-`factgrid-community@listserv.dfn.de`. Der Ablauf in einem Satz: **die Zahlen kommen aus SQL, die
-Sprache aus dem Modell.**
+Freitags 08:00 Ortszeit (`Europe/Berlin`) schickt `ops/factgrid-briefing.timer` ein Briefing über
+die vergangene Woche (Freitag bis Donnerstag, UTC) an `BRIEFING_TO` – eingerichtet ist die
+Community-Liste `factgrid-community@listserv.dfn.de`. Die Woche endet am Donnerstag und damit
+genau dort, wo der MediaWiki-Spiegel vom selben Morgen (06:00) aufhört. Der Ablauf in einem
+Satz: **die Zahlen kommen aus SQL, die Sprache aus dem Modell.**
 
 `collect()` holt aus dem MediaWiki-Spiegel (Abschnitt 3.7) alles, was im Briefing vorkommen darf:
 Bearbeitungen, berührte und neu angelegte Seiten, aktive Konten, der Vergleich zur Vorwoche, die
@@ -494,6 +495,11 @@ per `search_entities` auflösen, bei Unsicherheit ein Beispiel-Item mit `get_ent
 `sparql` – und bei Fehlern die zurückgegebene QLever-Meldung zur Korrektur nutzen. Ergebnisse über 200 Zeilen
 werden abgeschnitten, was das Modell zu Aggregationen zwingt statt Rohdaten in den Kontext zu ziehen.
 
+## 4. Schnellstart
+
+Voraussetzungen: Python ≥ 3.10, `uv` (oder `pipx`), `pigz` (optional), Docker oder das native QLever-Paket,
+ein OpenRouter-Schlüssel (oder ein Anthropic-Schlüssel bzw. `ant auth login`).
+
 **Kostenfalle.** Was früher Rechenzeit war, ist jetzt Token-Verbrauch. Claude Code bringt einen
 System-Prompt von grob 15–20 k Token mit, die pro Frage neu im Kontext stehen; jeder Tool-Aufruf hängt
 ein Ergebnis daran. Zwei Hebel dagegen sind eingebaut: der Deckel von 200 Zeilen pro Ergebnis
@@ -521,8 +527,10 @@ in `CLAUDE.md` oder für ein späteres Fine-Tuning verwenden lässt.
 ## 7. Betrieb und Aktualisierung
 
 `make refresh` führt Download, Konvertierung, Neuindexierung und Neustart aus und löscht den
-Schema-Cache. Wöchentlich reicht für die meisten Zwecke; `ops/factgrid-refresh.timer` ist ein
-systemd-Timer-Beispiel (Sonntag 03:00). QLever kann während der Indexierung weiterlaufen, da `qlever index
+Schema-Cache (zuletzt gemessen: Download 1 GB, Konvertierung 3,5 min, Index 6,5 min). `ops/factgrid-refresh.service`
+und `.timer` sind System-Units dafür (nach `/etc/systemd/system/` kopieren, `systemctl enable --now
+factgrid-refresh.timer`): täglich 02:00, weil FactGrid den JSON-Dump ab ~22:00 UTC schreibt; um 06:00 folgt
+`factgrid-mwdb.timer`. QLever kann während der Indexierung weiterlaufen, da `qlever index
 --overwrite-existing` in neue Dateien schreibt; `make refresh` stoppt den Server dennoch vor dem Index, um
 RAM zu sparen.
 
@@ -570,12 +578,12 @@ factgrid-local/
 ├── agent/mini_agent.py     Tool-Loop ohne Claude Code (OpenRouter/Anthropic)
 ├── chat/                   Web-Chatbot mit Modellauswahl (server.py, index.html)
 ├── eval/                   questions.jsonl, run_eval.py, runs/
-├── ops/                    systemd-Units: wöchentlicher QLever-Refresh, Chat-Dienst, tägliche Prüfung auf neue SQL-Dumps
+├── ops/                    systemd-Units: täglicher QLever-Refresh (02:00), Chat-Dienst, täglicher SQL-Dump-Import (06:00)
 ├── tests/                  test_wb2rdf.py, test_mcp.py, test_mwdb.py, mock_sparql.py
 └── LICENSE                 MIT
 ```
 
 ## 11. Lizenz
-├── scripts/weekly_briefing.py  Wochenbriefing an die Community-Liste (montags 08:00 UTC)
 
 MIT, siehe `LICENSE`.
+├── scripts/weekly_briefing.py  Wochenbriefing an die Community-Liste (freitags 08:00 Ortszeit)

@@ -25,20 +25,23 @@ import weekly_briefing as wb  # noqa: E402
 UTC = timezone.utc
 
 
-def test_week_range_is_the_last_full_monday_week():
-    # Montag 21.09.2026, 08:00 UTC – der Timer läuft: Berichtswoche ist Mo 14. bis So 20.
-    montag = datetime(2026, 9, 21, 8, 0, tzinfo=UTC)
-    start, end = wb.week_range(montag)
-    assert (start, end) == (datetime(2026, 9, 14, tzinfo=UTC), datetime(2026, 9, 21, tzinfo=UTC))
-    assert wb.stamp(start) == "20260914000000" and wb.stamp(end) == "20260921000000"
+def test_week_range_is_the_last_full_friday_week():
+    # Freitag 25.09.2026, 08:00 UTC – der Timer läuft: Berichtswoche ist Fr 18. bis Do 24.,
+    # sie endet also am Vortag, genau dort, wo der Spiegel vom selben Morgen aufhört.
+    freitag = datetime(2026, 9, 25, 8, 0, tzinfo=UTC)
+    start, end = wb.week_range(freitag)
+    assert (start, end) == (datetime(2026, 9, 18, tzinfo=UTC), datetime(2026, 9, 25, tzinfo=UTC))
+    assert wb.stamp(start) == "20260918000000" and wb.stamp(end) == "20260925000000"
     # Mitten in der Woche gefragt: immer noch die letzte ABGESCHLOSSENE Woche
-    mittwoch = datetime(2026, 9, 23, 17, 30, tzinfo=UTC)
+    mittwoch = datetime(2026, 9, 30, 17, 30, tzinfo=UTC)
     assert wb.week_range(mittwoch) == (start, end)
+    # Der Freitag selbst gehört schon zur neuen Woche, nicht mehr zur berichteten
+    assert wb.week_range(freitag)[1] == freitag.replace(hour=0)
     # Eine Woche weiter zurück
-    assert wb.week_range(montag, weeks_back=2)[0] == datetime(2026, 9, 7, tzinfo=UTC)
+    assert wb.week_range(freitag, weeks_back=2)[0] == datetime(2026, 9, 11, tzinfo=UTC)
     # Zeitzone: eine lokale Zeit wird nach UTC gerechnet, nicht abgeschnitten
-    berlin = datetime(2026, 9, 21, 1, 30, tzinfo=timezone(timedelta(hours=2)))   # = 23:30 UTC am Sonntag
-    assert wb.week_range(berlin)[1] == datetime(2026, 9, 14, tzinfo=UTC)
+    berlin = datetime(2026, 9, 25, 1, 30, tzinfo=timezone(timedelta(hours=2)))   # = 23:30 UTC am Donnerstag
+    assert wb.week_range(berlin)[1] == datetime(2026, 9, 18, tzinfo=UTC)
 
 
 def _data() -> dict:

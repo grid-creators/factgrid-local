@@ -1,13 +1,14 @@
 # /etc/systemd/system/factgrid-briefing.timer
-# Montags 08:00 UTC (10:00 MESZ / 09:00 MEZ). Die Berichtswoche ist dann die gerade
-# abgeschlossene, Montag bis Sonntag; der MediaWiki-Spiegel ist seit 06:00 des Tages frisch.
-# Persistent: war die Maschine am Montag aus, holt der Timer den Lauf nach - das Skript rechnet
-# den Zeitraum aus der Laufzeit, berichtet dann also über die zuletzt abgeschlossene Woche.
+# Freitags 08:00 Europe/Berlin (MESZ/MEZ - die Ortszeit steht explizit in OnCalendar, damit es
+# über die Zeitumstellung hinweg 08:00 Ortszeit bleibt; systemd >= 252 versteht die Zonenangabe).
+# Der MediaWiki-Spiegel ist seit 06:00 des Tages frisch und reicht bis zum Vortag (Donnerstag).
+# Persistent: war die Maschine am Freitag aus, holt der Timer den Lauf nach - das Skript rechnet
+# den Zeitraum aus der Laufzeit.
 [Unit]
-Description=Wöchentliches FactGrid-Briefing (montags 08:00 UTC)
+Description=Wöchentliches FactGrid-Briefing (freitags 08:00 Ortszeit)
 
 [Timer]
-OnCalendar=Mon *-*-* 08:00:00 UTC
+OnCalendar=Fri *-*-* 08:00:00 Europe/Berlin
 Persistent=true
 
 [Install]

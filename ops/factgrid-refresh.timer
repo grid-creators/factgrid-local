@@ -1,11 +1,12 @@
-# ~/.config/systemd/user/factgrid-refresh.timer
+# /etc/systemd/system/factgrid-refresh.timer
+# Täglich um 02:00: FactGrid schreibt den JSON-Dump ab ~22:00 UTC (Mitternacht MESZ), um 02:00 liegt
+# also der Dump des Vortags bereit. Danach: 04:00 Backup-Abruf (Cron), 06:00 factgrid-mwdb.timer.
 [Unit]
-Description=Wöchentliche Aktualisierung des FactGrid-Spiegels
+Description=Täglich den QLever-Spiegel von FactGrid aktualisieren
 
 [Timer]
-OnCalendar=Sun 03:00
+OnCalendar=*-*-* 02:00
 Persistent=true
-RandomizedDelaySec=30min
 
 [Install]
 WantedBy=timers.target
